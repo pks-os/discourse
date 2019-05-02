@@ -1,5 +1,18 @@
 import { acceptance, logIn } from "helpers/qunit-helpers";
-acceptance("Search");
+
+const emptySearchContextCallbacks = [];
+
+acceptance("Search", {
+  pretend(server) {
+    server.handledRequest = (verb, path, request) => {
+      if (request.queryParams["search_context[type]"] === undefined) {
+        emptySearchContextCallbacks.forEach(callback => {
+          callback.call();
+        });
+      }
+    };
+  }
+});
 
 QUnit.test("search", async assert => {
   await visit("/");
@@ -62,21 +75,35 @@ QUnit.test("Search with context", async assert => {
   await visit("/t/internationalization-localization/280/1");
 
   await click("#search-button");
-  await fillIn("#search-term", "dev");
+  await fillIn("#search-term", "a proper");
   await click(".search-context input[type='checkbox']");
   await keyEvent("#search-term", "keyup", 16);
 
   assert.ok(exists(".search-menu .results ul li"), "it shows results");
 
-  assert.ok(
-    exists(".cooked span.highlight-strong"),
-    "it should highlight the search term"
+  const highlighted = [];
+
+  find("#post_7 span.highlight-strong").map((_, span) => {
+    highlighted.push(span.innerText);
+  });
+
+  assert.deepEqual(
+    highlighted,
+    ["a", "a", "proper", "a"],
+    "it should highlight the post with the search terms correctly"
   );
+
+  let callbackCalled = false;
+
+  emptySearchContextCallbacks.push(() => {
+    callbackCalled = true;
+  });
 
   await visit("/");
   await click("#search-button");
 
   assert.ok(!exists(".search-context input[type='checkbox']"));
+  assert.ok(callbackCalled, "it triggers a new search");
 
   await visit("/t/internationalization-localization/280/1");
   await click("#search-button");

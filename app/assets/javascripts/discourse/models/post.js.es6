@@ -17,55 +17,51 @@ const Post = RestModel.extend({
     return Discourse.SiteSettings;
   },
 
-  shareUrl: function() {
+  @computed("url")
+  shareUrl(url) {
     const user = Discourse.User.current();
     const userSuffix = user ? "?u=" + user.get("username_lower") : "";
 
     if (this.get("firstPost")) {
       return this.get("topic.url") + userSuffix;
     } else {
-      return this.get("url") + userSuffix;
+      return url + userSuffix;
     }
-  }.property("url"),
+  },
 
-  new_user: Em.computed.equal("trust_level", 0),
-  firstPost: Em.computed.equal("post_number", 1),
+  new_user: Ember.computed.equal("trust_level", 0),
+  firstPost: Ember.computed.equal("post_number", 1),
 
   // Posts can show up as deleted if the topic is deleted
-  deletedViaTopic: Em.computed.and("firstPost", "topic.deleted_at"),
-  deleted: Em.computed.or("deleted_at", "deletedViaTopic"),
-  notDeleted: Em.computed.not("deleted"),
+  deletedViaTopic: Ember.computed.and("firstPost", "topic.deleted_at"),
+  deleted: Ember.computed.or("deleted_at", "deletedViaTopic"),
+  notDeleted: Ember.computed.not("deleted"),
 
-  showName: function() {
-    const name = this.get("name");
+  @computed("name", "username")
+  showName(name, username) {
     return (
-      name &&
-      name !== this.get("username") &&
-      Discourse.SiteSettings.display_name_on_posts
+      name && name !== username && Discourse.SiteSettings.display_name_on_posts
     );
-  }.property("name", "username"),
+  },
 
-  postDeletedBy: function() {
-    if (this.get("firstPost")) {
-      return this.get("topic.deleted_by");
-    }
-    return this.get("deleted_by");
-  }.property("firstPost", "deleted_by", "topic.deleted_by"),
+  @computed("firstPost", "deleted_by", "topic.deleted_by")
+  postDeletedBy(firstPost, deletedBy, topicDeletedBy) {
+    return firstPost ? topicDeletedBy : deletedBy;
+  },
 
-  postDeletedAt: function() {
-    if (this.get("firstPost")) {
-      return this.get("topic.deleted_at");
-    }
-    return this.get("deleted_at");
-  }.property("firstPost", "deleted_at", "topic.deleted_at"),
+  @computed("firstPost", "deleted_at", "topic.deleted_at")
+  postDeletedAt(firstPost, deletedAt, topicDeletedAt) {
+    return firstPost ? topicDeletedAt : deletedAt;
+  },
 
-  url: function() {
+  @computed("post_number", "topic_id", "topic.slug")
+  url(postNr, topicId, slug) {
     return postUrl(
-      this.get("topic.slug") || this.get("topic_slug"),
-      this.get("topic_id") || this.get("topic.id"),
-      this.get("post_number")
+      slug || this.get("topic_slug"),
+      topicId || this.get("topic.id"),
+      postNr
     );
-  }.property("post_number", "topic_id", "topic.slug"),
+  },
 
   // Don't drop the /1
   @computed("post_number", "url")
@@ -91,18 +87,27 @@ const Post = RestModel.extend({
       .catch(popupAjaxError);
   },
 
-  internalLinks: function() {
+  @computed("link_counts.@each.internal")
+  internalLinks() {
     if (Ember.isEmpty(this.get("link_counts"))) return null;
+
     return this.get("link_counts")
       .filterBy("internal")
       .filterBy("title");
-  }.property("link_counts.@each.internal"),
+  },
 
-  flagsAvailable: function() {
+  @computed("actions_summary.@each.can_act")
+  flagsAvailable() {
+    // TODO: Investigate why `this.site` is sometimes null when running
+    // Search - Search with context
+    if (!this.site) {
+      return [];
+    }
+
     return this.site.get("flagTypes").filter(item => {
       return this.get(`actionByName.${item.get("name_key")}.can_act`);
     });
-  }.property("actions_summary.@each.can_act"),
+  },
 
   afterUpdate(res) {
     if (res.category) {
@@ -201,8 +206,12 @@ const Post = RestModel.extend({
         can_recover: true
       });
     } else {
+      const key =
+        this.get("post_number") === 1
+          ? "topic.deleted_by_author"
+          : "post.deleted_by_author";
       promise = cookAsync(
-        I18n.t("post.deleted_by_author", {
+        I18n.t(key, {
           count: Discourse.SiteSettings.delete_removed_posts_after
         })
       ).then(cooked => {
@@ -217,7 +226,7 @@ const Post = RestModel.extend({
       });
     }
 
-    return promise || Em.RSVP.Promise.resolve();
+    return promise || Ember.RSVP.Promise.resolve();
   },
 
   /**
@@ -271,7 +280,7 @@ const Post = RestModel.extend({
         if (key === "reply_to_user" && value && oldValue) {
           skip =
             value.username === oldValue.username ||
-            Em.get(value, "username") === Em.get(oldValue, "username");
+            Ember.get(value, "username") === Ember.get(oldValue, "username");
         }
 
         if (!skip) {
@@ -338,7 +347,7 @@ const Post = RestModel.extend({
 Post.reopenClass({
   munge(json) {
     if (json.actions_summary) {
-      const lookup = Em.Object.create();
+      const lookup = Ember.Object.create();
 
       // this area should be optimized, it is creating way too many objects per post
       json.actions_summary = json.actions_summary.map(function(a) {
@@ -369,10 +378,10 @@ Post.reopenClass({
     });
   },
 
-  deleteMany(post_ids) {
+  deleteMany(post_ids, { agreeWithFirstReplyFlag = true } = {}) {
     return ajax("/posts/destroy_many", {
       type: "DELETE",
-      data: { post_ids }
+      data: { post_ids, agree_with_first_reply_flag: agreeWithFirstReplyFlag }
     });
   },
 

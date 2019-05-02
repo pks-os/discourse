@@ -24,7 +24,7 @@ class DiscourseSingleSignOn < SingleSignOn
 
   def register_nonce(return_path)
     if nonce
-      $redis.setex(nonce_key, NONCE_EXPIRY_TIME, return_path)
+      $redis.setex(nonce_key, SingleSignOn.nonce_expiry_time, return_path)
     end
   end
 
@@ -60,10 +60,7 @@ class DiscourseSingleSignOn < SingleSignOn
     user.unstage
     user.save
 
-    # if the user isn't new or it's attached to the SSO record we might be overriding username or email
-    unless user.new_record?
-      change_external_attributes_and_override(sso_record, user)
-    end
+    change_external_attributes_and_override(sso_record, user)
 
     if sso_record && (user = sso_record.user) && !user.active && !require_activation
       user.active = true
@@ -86,6 +83,9 @@ class DiscourseSingleSignOn < SingleSignOn
     # optionally save the user and sso_record if they have changed
     user.user_avatar.save! if user.user_avatar
     user.save!
+
+    # The user might require approval
+    user.create_reviewable
 
     if bio && (user.user_profile.bio_raw.blank? || SiteSetting.sso_overrides_bio)
       user.user_profile.bio_raw = bio
@@ -165,7 +165,8 @@ class DiscourseSingleSignOn < SingleSignOn
     # Use a mutex here to counter SSO requests that are sent at the same time w
     # the same email payload
     DistributedMutex.synchronize("discourse_single_sign_on_#{email}") do
-      unless user = User.find_by_email(email)
+      user = User.find_by_email(email) if !require_activation
+      if !user
         try_name = name.presence
         try_username = username.presence
 
@@ -175,6 +176,10 @@ class DiscourseSingleSignOn < SingleSignOn
           username: UserNameSuggester.suggest(try_username || try_name || email),
           ip_address: ip_address
         }
+
+        if SiteSetting.allow_user_locale && locale && LocaleSiteSetting.valid_value?(locale)
+          user_params[:locale] = locale
+        end
 
         user = User.create!(user_params)
 
@@ -245,6 +250,10 @@ class DiscourseSingleSignOn < SingleSignOn
 
     if SiteSetting.sso_overrides_name && user.name != name && name.present?
       user.name = name || User.suggest_name(username.blank? ? email : username)
+    end
+
+    if locale_force_update && SiteSetting.allow_user_locale && locale && LocaleSiteSetting.valid_value?(locale)
+      user.locale = locale
     end
 
     avatar_missing = user.uploaded_avatar_id.nil? || !Upload.exists?(user.uploaded_avatar_id)

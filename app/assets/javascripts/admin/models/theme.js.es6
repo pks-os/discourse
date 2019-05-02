@@ -1,10 +1,110 @@
 import RestModel from "discourse/models/rest";
 import { default as computed } from "ember-addons/ember-computed-decorators";
+import { popupAjaxError } from "discourse/lib/ajax-error";
 
 const THEME_UPLOAD_VAR = 2;
 
+export const THEMES = "themes";
+export const COMPONENTS = "components";
+const SETTINGS_TYPE_ID = 5;
+
 const Theme = RestModel.extend({
-  FIELDS_IDS: [0, 1],
+  FIELDS_IDS: [0, 1, 5],
+  isActive: Ember.computed.or("default", "user_selectable"),
+  isPendingUpdates: Ember.computed.gt("remote_theme.commits_behind", 0),
+  hasEditedFields: Ember.computed.gt("editedFields.length", 0),
+
+  @computed("theme_fields.[]")
+  targets() {
+    return [
+      { id: 0, name: "common" },
+      { id: 1, name: "desktop", icon: "desktop" },
+      { id: 2, name: "mobile", icon: "mobile-alt" },
+      { id: 3, name: "settings", icon: "cog", advanced: true },
+      {
+        id: 4,
+        name: "translations",
+        icon: "globe",
+        advanced: true,
+        customNames: true
+      },
+      {
+        id: 5,
+        name: "extra_scss",
+        icon: "paint-brush",
+        advanced: true,
+        customNames: true
+      }
+    ].map(target => {
+      target["edited"] = this.hasEdited(target.name);
+      target["error"] = this.hasError(target.name);
+      return target;
+    });
+  },
+
+  @computed("theme_fields.[]")
+  fieldNames() {
+    const common = [
+      "scss",
+      "head_tag",
+      "header",
+      "after_header",
+      "body_tag",
+      "footer"
+    ];
+
+    const scss_fields = (this.get("theme_fields") || [])
+      .filter(f => f.target === "extra_scss" && f.name !== "")
+      .map(f => f.name);
+
+    if (scss_fields.length < 1) {
+      scss_fields.push("importable_scss");
+    }
+
+    return {
+      common: [...common, "embedded_scss"],
+      desktop: common,
+      mobile: common,
+      settings: ["yaml"],
+      translations: [
+        "en",
+        ...(this.get("theme_fields") || [])
+          .filter(f => f.target === "translations" && f.name !== "en")
+          .map(f => f.name)
+      ],
+      extra_scss: scss_fields
+    };
+  },
+
+  @computed("fieldNames", "theme_fields.[]", "theme_fields.@each.error")
+  fields(fieldNames) {
+    const hash = {};
+    Object.keys(fieldNames).forEach(target => {
+      hash[target] = fieldNames[target].map(fieldName => {
+        const field = {
+          name: fieldName,
+          edited: this.hasEdited(target, fieldName),
+          error: this.hasError(target, fieldName)
+        };
+
+        if (target === "translations" || target === "extra_scss") {
+          field.translatedName = fieldName;
+        } else {
+          field.translatedName = I18n.t(
+            `admin.customize.theme.${fieldName}.text`
+          );
+          field.title = I18n.t(`admin.customize.theme.${fieldName}.title`);
+        }
+
+        if (fieldName.indexOf("_tag") > 0) {
+          field.icon = "far-file-alt";
+        }
+
+        return field;
+      });
+    });
+    return hash;
+  },
 
   @computed("theme_fields")
   themeFields(fields) {
@@ -22,7 +122,7 @@ const Theme = RestModel.extend({
     return hash;
   },
 
-  @computed("theme_fields", "theme_fields.@each")
+  @computed("theme_fields", "theme_fields.[]")
   uploads(fields) {
     if (!fields) {
       return [];
@@ -32,19 +132,46 @@ const Theme = RestModel.extend({
     );
   },
 
+  @computed("theme_fields", "theme_fields.@each.error")
+  isBroken(fields) {
+    return (
+      fields && fields.some(field => field.error && field.error.length > 0)
+    );
+  },
+
+  @computed("theme_fields.[]")
+  editedFields(fields) {
+    return fields.filter(
+      field => !Ember.isBlank(field.value) && field.type_id !== SETTINGS_TYPE_ID
+    );
+  },
+
+  @computed("remote_theme.last_error_text")
+  remoteError(errorText) {
+    if (errorText && errorText.length > 0) {
+      return errorText;
+    }
+  },
+
   getKey(field) {
     return `${field.target} ${field.name}`;
   },
 
   hasEdited(target, name) {
     if (name) {
-      return !Em.isEmpty(this.getField(target, name));
+      return !Ember.isEmpty(this.getField(target, name));
     } else {
       let fields = this.get("theme_fields") || [];
       return fields.any(
-        field => field.target === target && !Em.isEmpty(field.value)
+        field => field.target === target && !Ember.isEmpty(field.value)
       );
     }
+  },
+
+  hasError(target, name) {
+    return this.get("theme_fields")
+      .filter(f => f.target === target && (!name || name === f.name))
+      .any(f => f.error);
   },
 
   getError(target, name) {
@@ -85,7 +212,7 @@ const Theme = RestModel.extend({
         existing.value = value;
         existing.upload_id = upload_id;
       } else {
-        fields.push(field);
+        fields.pushObject(field);
       }
       return;
     }
@@ -94,14 +221,23 @@ const Theme = RestModel.extend({
     let key = this.getKey({ target, name });
     let existingField = themeFields[key];
     if (!existingField) {
-      this.theme_fields.push(field);
+      this.theme_fields.pushObject(field);
       themeFields[key] = field;
     } else {
+      const changed =
+        (Ember.isEmpty(existingField.value) && !Ember.isEmpty(value)) ||
+        (Ember.isEmpty(value) && !Ember.isEmpty(existingField.value));
+
       existingField.value = value;
+      if (changed) {
+        // Observing theme_fields.@each.value is too slow, so manually notify
+        // if the value goes to/from blank
+        this.notifyPropertyChange("theme_fields.[]");
+      }
     }
   },
 
-  @computed("childThemes.@each")
+  @computed("childThemes.[]")
   child_theme_ids(childThemes) {
     if (childThemes) {
       return childThemes.map(theme => Ember.get(theme, "id"));
@@ -150,13 +286,19 @@ const Theme = RestModel.extend({
 
   saveChanges() {
     const hash = this.getProperties.apply(this, arguments);
-    return this.save(hash).then(() => this.set("changed", false));
+    return this.save(hash)
+      .finally(() => this.set("changed", false))
+      .catch(popupAjaxError);
   },
 
   saveSettings(name, value) {
     const settings = {};
     settings[name] = value;
     return this.save({ settings });
+  },
+
+  saveTranslation(name, value) {
+    return this.save({ translations: { [name]: value } });
   }
 });
 

@@ -1,8 +1,6 @@
-require 'rails_helper'
+# frozen_string_literal: true
 
-# For autospec:
-Auth.send(:remove_const, :GoogleOAuth2Authenticator)
-load 'auth/google_oauth2_authenticator.rb'
+require 'rails_helper'
 
 describe Auth::GoogleOAuth2Authenticator do
 
@@ -14,6 +12,7 @@ describe Auth::GoogleOAuth2Authenticator do
     user = Fabricate(:user)
 
     hash = {
+      provider: "google_oauth2",
       uid: "123456789",
       info: {
           name: "John Doe",
@@ -39,6 +38,7 @@ describe Auth::GoogleOAuth2Authenticator do
       user = Fabricate(:user)
 
       hash = {
+        provider: "google_oauth2",
         uid: "123456789",
         info: {
             name: "John Doe",
@@ -63,9 +63,10 @@ describe Auth::GoogleOAuth2Authenticator do
       user1 = Fabricate(:user)
       user2 = Fabricate(:user)
 
-      GoogleUserInfo.create!(user_id: user1.id, google_user_id: 100)
+      UserAssociatedAccount.create!(provider_name: "google_oauth2", user_id: user1.id, provider_uid: 100)
 
       hash = {
+        provider: "google_oauth2",
         uid: "100",
         info: {
             name: "John Doe",
@@ -83,14 +84,17 @@ describe Auth::GoogleOAuth2Authenticator do
       result = authenticator.after_authenticate(hash, existing_account: user2)
 
       expect(result.user.id).to eq(user2.id)
-      expect(GoogleUserInfo.exists?(user_id: user1.id)).to eq(false)
-      expect(GoogleUserInfo.exists?(user_id: user2.id)).to eq(true)
+      expect(UserAssociatedAccount.exists?(user_id: user1.id)).to eq(false)
+      expect(UserAssociatedAccount.exists?(user_id: user2.id)).to eq(true)
     end
 
     it 'can create a proper result for non existing users' do
       hash = {
+        provider: "google_oauth2",
         uid: "123456789",
         info: {
+            first_name: "Jane",
+            last_name: "Doe",
             name: "Jane Doe",
             email: "jane.doe@the.google.com"
         },
@@ -107,7 +111,7 @@ describe Auth::GoogleOAuth2Authenticator do
       result = authenticator.after_authenticate(hash)
 
       expect(result.user).to eq(nil)
-      expect(result.extra_data[:name]).to eq("Jane Doe")
+      expect(result.name).to eq("Jane Doe")
     end
   end
 
@@ -120,7 +124,7 @@ describe Auth::GoogleOAuth2Authenticator do
     end
 
       it 'revokes correctly' do
-        GoogleUserInfo.create!(user_id: user.id, google_user_id: 12345, email: 'someuser@somedomain.tld')
+        UserAssociatedAccount.create!(provider_name: "google_oauth2", user_id: user.id, provider_uid: 12345)
         expect(authenticator.can_revoke?).to eq(true)
         expect(authenticator.revoke(user)).to eq(true)
         expect(authenticator.description_for_user(user)).to eq("")

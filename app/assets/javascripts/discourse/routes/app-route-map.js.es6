@@ -60,36 +60,33 @@ export default function() {
     this.route("categoryWithID", { path: "/c/:parentSlug/:slug/:id" });
   });
 
-  this.route("groups", { resetNamespace: true }, function() {
+  this.route("groups", { resetNamespace: true, path: "/g" }, function() {
     this.route("new", { path: "custom/new" });
   });
 
-  this.route(
-    "group",
-    { path: "/groups/:name", resetNamespace: true },
-    function() {
+  this.route("group", { path: "/g/:name", resetNamespace: true }, function() {
+    this.route("members");
+    this.route("requests");
+
+    this.route("activity", function() {
+      this.route("posts");
+      this.route("topics");
+      this.route("mentions");
+    });
+
+    this.route("manage", function() {
+      this.route("profile");
+      this.route("membership");
+      this.route("interaction");
       this.route("members");
+      this.route("logs");
+    });
 
-      this.route("activity", function() {
-        this.route("posts");
-        this.route("topics");
-        this.route("mentions");
-      });
-
-      this.route("manage", function() {
-        this.route("profile");
-        this.route("membership");
-        this.route("interaction");
-        this.route("members");
-        this.route("logs");
-      });
-
-      this.route("messages", function() {
-        this.route("inbox");
-        this.route("archive");
-      });
-    }
-  );
+    this.route("messages", function() {
+      this.route("inbox");
+      this.route("archive");
+    });
+  });
 
   // User routes
   this.route("users", { resetNamespace: true, path: "/u" });
@@ -102,6 +99,7 @@ export default function() {
     "user",
     { path: "/u/:username", resetNamespace: true },
     function() {
+      this.route("profile-hidden");
       this.route("summary");
       this.route(
         "userActivity",
@@ -128,7 +126,6 @@ export default function() {
       );
 
       this.route("badges");
-      this.route("flaggedPosts", { path: "/flagged-posts" });
       this.route("deletedPosts", { path: "/deleted-posts" });
 
       this.route(
@@ -150,6 +147,7 @@ export default function() {
         this.route("emails");
         this.route("notifications");
         this.route("categories");
+        this.route("users");
         this.route("tags");
         this.route("interface");
         this.route("apps");
@@ -171,6 +169,12 @@ export default function() {
     }
   );
 
+  this.route("review", { path: "/review" }, function() {
+    this.route("show", { path: "/:reviewable_id" });
+    this.route("index", { path: "/" });
+    this.route("topics", { path: "/topics" });
+    this.route("settings", { path: "/settings" });
+  });
   this.route("signup", { path: "/signup" });
   this.route("login", { path: "/login" });
   this.route("login-preferences");
@@ -179,6 +183,8 @@ export default function() {
   this.route("tos", { path: "/tos" });
   this.route("privacy", { path: "/privacy" });
   this.route("guidelines", { path: "/guidelines" });
+  this.route("rules", { path: "/rules" });
+  this.route("conduct", { path: "/conduct" });
 
   this.route("new-topic", { path: "/new-topic" });
   this.route("new-message", { path: "/new-message" });
@@ -186,8 +192,6 @@ export default function() {
   this.route("badges", { resetNamespace: true }, function() {
     this.route("show", { path: "/:id/:slug" });
   });
-
-  this.route("queued-posts", { path: "/queued-posts", resetNamespace: true });
 
   this.route("full-page-search", { path: "/search" });
 

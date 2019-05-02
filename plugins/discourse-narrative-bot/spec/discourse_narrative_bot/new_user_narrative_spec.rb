@@ -25,7 +25,7 @@ describe DiscourseNarrativeBot::NewUserNarrative do
   let(:reset_trigger) { DiscourseNarrativeBot::TrackSelector.reset_trigger }
 
   before do
-    SiteSetting.queue_jobs = false
+    Jobs.run_immediately!
     SiteSetting.discourse_narrative_bot_enabled = true
   end
 
@@ -401,12 +401,28 @@ describe DiscourseNarrativeBot::NewUserNarrative do
 
             expect(narrative.get_data(user)[:state].to_sym).to eq(:tutorial_flag)
           end
+
+          describe 'when allow_flagging_staff is false' do
+            it 'should go to the right state' do
+              SiteSetting.allow_flagging_staff = false
+              post.update!(raw: skip_trigger)
+
+              DiscourseNarrativeBot::TrackSelector.new(
+                :reply,
+                user,
+                post_id: post.id
+              ).select
+
+              expect(narrative.get_data(user)[:state].to_sym)
+                .to eq(:tutorial_search)
+            end
+          end
         end
       end
 
       context 'when image is not found' do
         it 'should create the right replies' do
-          PostAction.act(user, post_2, PostActionType.types[:like])
+          PostActionCreator.like(user, post_2)
 
           described_class.any_instance.expects(:enqueue_timeout_job).with(user)
           DiscourseNarrativeBot::TrackSelector.new(:reply, user, post_id: post.id).select
@@ -418,12 +434,19 @@ describe DiscourseNarrativeBot::NewUserNarrative do
 
           described_class.any_instance.expects(:enqueue_timeout_job).with(user)
 
+          url = "https://i.ytimg.com/vi/tntOCGkgt98/maxresdefault.jpg"
+
+          stub_request(:head, url).to_return(
+            status: 200, body: file_from_fixtures("smallest.png").read
+          )
+
           new_post = Fabricate(:post,
             user: user,
             topic: topic,
-            raw: "<img src='https://i.ytimg.com/vi/tntOCGkgt98/maxresdefault.jpg'>"
+            raw: url
           )
 
+          CookedPostProcessor.new(new_post).post_process
           DiscourseNarrativeBot::TrackSelector.new(:reply, user, post_id: new_post.id).select
 
           expected_raw = <<~RAW
@@ -480,7 +503,7 @@ describe DiscourseNarrativeBot::NewUserNarrative do
           .to eq(new_post.id)
 
         described_class.any_instance.expects(:enqueue_timeout_job).with(user)
-        PostAction.act(user, post_2, PostActionType.types[:like])
+        PostActionCreator.like(user, post_2)
 
         expected_raw = <<~RAW
           #{I18n.t('discourse_narrative_bot.new_user_narrative.images.reply')}
@@ -687,6 +710,23 @@ describe DiscourseNarrativeBot::NewUserNarrative do
 
             expect(narrative.get_data(user)[:state].to_sym).to eq(:tutorial_mention)
           end
+        end
+      end
+
+      describe 'when user mentions is disabled' do
+        before do
+          SiteSetting.enable_mentions = false
+        end
+
+        it 'should skip the mention tutorial step' do
+          post.update!(
+            raw: ':monkey: :fries:'
+          )
+
+          narrative.expects(:enqueue_timeout_job).with(user)
+          narrative.input(:reply, user, post: post)
+
+          expect(narrative.get_data(user)[:state].to_sym).to eq(:tutorial_formatting)
         end
       end
 

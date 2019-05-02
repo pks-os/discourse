@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 RSpec.describe SecondFactorManager do
@@ -53,7 +55,7 @@ RSpec.describe SecondFactorManager do
         token = user.totp.now
 
         expect(user.authenticate_totp(token)).to eq(true)
-        expect(user.user_second_factors.totp.last_used).to eq(DateTime.now)
+        expect(user.user_second_factors.totp.last_used).to eq_time(DateTime.now)
         expect(user.authenticate_totp(token)).to eq(false)
       end
     end

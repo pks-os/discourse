@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 require_dependency 'user_option'
 
@@ -11,7 +13,8 @@ describe UserOption do
 
       user.reload
 
-      expect(user.user_option.email_always).to eq(SiteSetting.default_email_always)
+      expect(user.user_option.email_level).to eq(SiteSetting.default_email_level)
+      expect(user.user_option.email_messages_level).to eq(SiteSetting.default_email_messages_level)
     end
   end
 
@@ -27,7 +30,14 @@ describe UserOption do
       user.user_option.expects(:redirected_to_top).returns(nil)
       expect(user.user_option.should_be_redirected_to_top).to eq(false)
     end
+  end
 
+  describe "defaults" do
+    let(:user) { Fabricate(:user) }
+
+    it "should not hide the profile and presence by default" do
+      expect(user.user_option.hide_profile_and_presence).to eq(false)
+    end
   end
 
   describe "#mailing_list_mode" do

@@ -1,5 +1,6 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
-require_dependency 'post_destroyer'
 
 describe Post do
   before { Oneboxer.stubs :onebox }
@@ -134,6 +135,23 @@ describe Post do
       end
     end
 
+    context 'a post with notices' do
+      let(:post) {
+        post = Fabricate(:post, post_args)
+        post.custom_fields["notice_type"] = Post.notices[:returning_user]
+        post.custom_fields["notice_args"] = 1.day.ago
+        post.save_custom_fields
+        post
+      }
+
+      describe 'recovery' do
+        it 'deletes notices' do
+          expect { post.trash! }
+            .to change { post.custom_fields.length }.from(2).to(0)
+        end
+      end
+    end
+
   end
 
   describe 'flagging helpers' do
@@ -142,44 +160,39 @@ describe Post do
     let(:admin) { Fabricate(:admin) }
 
     it 'is_flagged? is accurate' do
-      PostAction.act(user, post, PostActionType.types[:off_topic])
-      post.reload
-      expect(post.is_flagged?).to eq(true)
+      PostActionCreator.off_topic(user, post)
+      expect(post.reload.is_flagged?).to eq(true)
 
-      PostAction.remove_act(user, post, PostActionType.types[:off_topic])
-      post.reload
-      expect(post.is_flagged?).to eq(false)
+      PostActionDestroyer.destroy(user, post, :off_topic)
+      expect(post.reload.is_flagged?).to eq(false)
     end
 
     it 'is_flagged? is true if flag was deferred' do
-      PostAction.act(user, post, PostActionType.types[:off_topic])
-      PostAction.defer_flags!(post.reload, admin)
-      post.reload
-      expect(post.is_flagged?).to eq(true)
+      result = PostActionCreator.off_topic(user, post)
+      result.reviewable.perform(admin, :ignore)
+      expect(post.reload.is_flagged?).to eq(true)
     end
 
     it 'is_flagged? is true if flag was cleared' do
-      PostAction.act(user, post, PostActionType.types[:off_topic])
-      PostAction.clear_flags!(post.reload, admin)
-      post.reload
-      expect(post.is_flagged?).to eq(true)
+      result = PostActionCreator.off_topic(user, post)
+      result.reviewable.perform(admin, :disagree)
+      expect(post.reload.is_flagged?).to eq(true)
     end
 
-    it 'has_active_flag? is false for deferred flags' do
-      PostAction.act(user, post, PostActionType.types[:spam])
-      post.reload
-      expect(post.has_active_flag?).to eq(true)
+    it 'reviewable_flag is nil when ignored' do
+      result = PostActionCreator.spam(user, post)
+      expect(post.reviewable_flag).to eq(result.reviewable)
 
-      PostAction.defer_flags!(post, admin)
-      post.reload
-      expect(post.has_active_flag?).to eq(false)
+      result.reviewable.perform(admin, :ignore)
+      expect(post.reviewable_flag).to be_nil
     end
 
-    it 'has_active_flag? is false for cleared flags' do
-      PostAction.act(user, post, PostActionType.types[:spam])
-      PostAction.clear_flags!(post.reload, admin)
-      post.reload
-      expect(post.has_active_flag?).to eq(false)
+    it 'reviewable_flag is nil when disagreed' do
+      result = PostActionCreator.spam(user, post)
+      expect(post.reviewable_flag).to eq(result.reviewable)
+
+      result.reviewable.perform(admin, :disagree)
+      expect(post.reload.reviewable_flag).to be_nil
     end
   end
 
@@ -392,7 +405,6 @@ describe Post do
 
       context "with a previous host" do
 
-        let(:user) { old_post.newuser }
         let(:another_disney_link) { post_with_body("[radiator springs](http://disneyland.disney.go.com/disney-california-adventure/radiator-springs-racers/)", newuser) }
 
         before do
@@ -940,6 +952,16 @@ describe Post do
   describe "cooking" do
     let(:post) { Fabricate.build(:post, post_args.merge(raw: "please read my blog http://blog.example.com")) }
 
+    it "should unconditionally follow links for staff" do
+
+      SiteSetting.tl3_links_no_follow = true
+      post.user.trust_level = 1
+      post.user.moderator = true
+      post.save
+
+      expect(post.cooked).not_to match(/nofollow/)
+    end
+
     it "should add nofollow to links in the post for trust levels below 3" do
       post.user.trust_level = 2
       post.save
@@ -958,6 +980,46 @@ describe Post do
       post.user.trust_level = 3
       post.save
       expect(post.cooked).to match(/nofollow noopener/)
+    end
+
+    describe 'mentions' do
+      let(:group) do
+        Fabricate(:group,
+          mentionable_level: Group::ALIAS_LEVELS[:members_mods_and_admins]
+        )
+      end
+
+      before do
+        Jobs.run_immediately!
+      end
+
+      describe 'when user can not mention a group' do
+        it "should not create the mention" do
+          post = Fabricate(:post, raw: "hello @#{group.name}")
+          post.trigger_post_process
+          post.reload
+
+          expect(post.cooked).to eq(
+            %Q|<p>hello <span class="mention">@#{group.name}</span></p>|
+          )
+        end
+      end
+
+      describe 'when user can mention a group' do
+        before do
+          group.add(post.user)
+        end
+
+        it 'should create the mention' do
+          post.update!(raw: "hello @#{group.name}")
+          post.trigger_post_process
+          post.reload
+
+          expect(post.cooked).to eq(
+            %Q|<p>hello <a class="mention-group" href="/groups/#{group.name}">@#{group.name}</a></p>|
+          )
+        end
+      end
     end
   end
 
@@ -1077,16 +1139,12 @@ describe Post do
 
     it "uses default locale for edit reason" do
       I18n.locale = 'de'
-      old_username = post.user.username_lower
 
       post.set_owner(coding_horror, Discourse.system_user)
       post.reload
 
       expected_reason = I18n.with_locale(SiteSetting.default_locale) do
-        I18n.t('change_owner.post_revision_text',
-               old_user: old_username,
-               new_user: coding_horror.username_lower
-        )
+        I18n.t('change_owner.post_revision_text')
       end
 
       expect(post.edit_reason).to eq(expected_reason)
@@ -1106,6 +1164,27 @@ describe Post do
       Post.rebake_old(100)
       post.reload
       expect(post.baked_at).to eq(baked)
+    end
+
+    it "will rate limit globally" do
+
+      post1 = create_post
+      post2 = create_post
+      post3 = create_post
+
+      Post.where(id: [post1.id, post2.id, post3.id]).update_all(baked_version: -1)
+
+      global_setting :max_old_rebakes_per_15_minutes, 2
+
+      RateLimiter.clear_all_global!
+      RateLimiter.enable
+
+      Post.rebake_old(100)
+
+      expect(post3.reload.baked_version).not_to eq(-1)
+      expect(post2.reload.baked_version).not_to eq(-1)
+      expect(post1.reload.baked_version).to eq(-1)
+
     end
   end
 
@@ -1155,6 +1234,126 @@ describe Post do
     post.revisions.create!(user_id: 1, post_id: post.id, number: 2)
     post.revisions.create!(user_id: 1, post_id: post.id, number: 1)
     expect(post.revisions.pluck(:number)).to eq([1, 2])
+  end
+
+  describe '#link_post_uploads' do
+    let(:video_upload) do
+      Fabricate(:upload,
+        url: '/uploads/default/original/1X/1/1234567890123456.mp4'
+      )
+    end
+
+    let(:image_upload) do
+      Fabricate(:upload,
+        url: '/uploads/default/original/1X/1/1234567890123456.jpg'
+      )
+    end
+
+    let(:audio_upload) do
+      Fabricate(:upload,
+        url: '/uploads/default/original/1X/1/1234567890123456.ogg'
+      )
+    end
+
+    let(:attachment_upload) do
+      Fabricate(:upload,
+        url: '/uploads/default/original/1X/1/1234567890123456.csv'
+      )
+    end
+
+    let(:raw) do
+      <<~RAW
+      <a href="#{attachment_upload.url}">Link</a>
+      <img src="#{image_upload.url}">
+
+      <video width="100%" height="100%" controls>
+        <source src="http://myforum.com#{video_upload.url}">
+        <a href="http://myforum.com#{video_upload.url}">http://myforum.com#{video_upload.url}</a>
+      </video>
+
+      <audio controls>
+        <source src="http://myforum.com#{audio_upload.url}">
+        <a href="http://myforum.com#{audio_upload.url}">http://myforum.com#{audio_upload.url}</a>
+      </audio>
+      RAW
+    end
+
+    let(:post) { Fabricate(:post, raw: raw) }
+
+    it "finds all the uploads in the post" do
+      post.custom_fields[Post::DOWNLOADED_IMAGES] = {
+        "/uploads/default/original/1X/1/1234567890123456.csv": attachment_upload.id
+      }
+
+      post.save_custom_fields
+      post.link_post_uploads
+
+      expect(PostUpload.where(post: post).pluck(:upload_id)).to contain_exactly(
+        video_upload.id, image_upload.id, audio_upload.id, attachment_upload.id
+      )
+    end
+
+    it "cleans the reverse index up for the current post" do
+      post.link_post_uploads
+
+      post_uploads_ids = post.post_uploads.pluck(:id)
+
+      post.link_post_uploads
+
+      expect(post.reload.post_uploads.pluck(:id)).to_not contain_exactly(
+        post_uploads_ids
+      )
+    end
+  end
+
+  context 'topic updated_at' do
+    let :topic do
+      create_post.topic
+    end
+
+    def updates_topic_updated_at
+
+      freeze_time 1.day.from_now
+      time = Time.now
+
+      result = yield
+
+      topic.reload
+      expect(topic.updated_at).to eq_time(time)
+
+      result
+    end
+
+    it "will update topic updated_at for all topic related events" do
+      SiteSetting.enable_whispers = true
+
+      post = updates_topic_updated_at do
+        create_post(topic_id: topic.id, post_type: Post.types[:whisper])
+      end
+
+      updates_topic_updated_at do
+        PostDestroyer.new(Discourse.system_user, post).destroy
+      end
+
+      updates_topic_updated_at do
+        PostDestroyer.new(Discourse.system_user, post).recover
+      end
+
+    end
+  end
+
+  context "have_uploads" do
+    it "should find all posts with the upload" do
+      ids = []
+      ids << Fabricate(:post, cooked: "A post with upload <img src='/uploads/default/1/defghijklmno.png'>").id
+      ids << Fabricate(:post, cooked: "A post with optimized image <img src='/uploads/default/_optimized/601/961/defghijklmno.png'>").id
+      Fabricate(:post)
+      ids << Fabricate(:post, cooked: "A post with upload <img src='/uploads/default/original/1X/abc/defghijklmno.png'>").id
+      ids << Fabricate(:post, cooked: "A post with upload link <a href='https://cdn.example.com/original/1X/abc/defghijklmno.png'>").id
+      ids << Fabricate(:post, cooked: "A post with optimized image <img src='https://cdn.example.com/bucket/optimized/1X/abc/defghijklmno.png'>").id
+      Fabricate(:post, cooked: "A post with external link <a href='https://example.com/wp-content/uploads/abcdef.gif'>")
+      expect(Post.have_uploads.order(:id).pluck(:id)).to eq(ids)
+    end
   end
 
 end

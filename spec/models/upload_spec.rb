@@ -1,30 +1,24 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe Upload do
 
   let(:upload) { build(:upload) }
-  let(:thumbnail) { build(:optimized_image, upload: upload) }
 
   let(:user_id) { 1 }
-  let(:url) { "http://domain.com" }
 
   let(:image_filename) { "logo.png" }
   let(:image) { file_from_fixtures(image_filename) }
-  let(:image_filesize) { File.size(image) }
-  let(:image_sha1) { Upload.generate_digest(image) }
 
   let(:image_svg_filename) { "image.svg" }
   let(:image_svg) { file_from_fixtures(image_svg_filename) }
-  let(:image_svg_filesize) { File.size(image_svg) }
 
   let(:huge_image_filename) { "huge.jpg" }
   let(:huge_image) { file_from_fixtures(huge_image_filename) }
-  let(:huge_image_filesize) { File.size(huge_image) }
 
   let(:attachment_path) { __FILE__ }
   let(:attachment) { File.new(attachment_path) }
-  let(:attachment_filename) { File.basename(attachment_path) }
-  let(:attachment_filesize) { File.size(attachment_path) }
 
   context ".create_thumbnail!" do
 
@@ -43,7 +37,45 @@ describe Upload do
       upload.reload
       expect(upload.optimized_images.count).to eq(1)
     end
+  end
 
+  it "supports <style> element in SVG" do
+    SiteSetting.authorized_extensions = "svg"
+
+    upload = UploadCreator.new(image_svg, image_svg_filename).create_for(user_id)
+    expect(upload.valid?).to eq(true)
+
+    path = Discourse.store.path_for(upload)
+    expect(File.read(path)).to match(/<style>/)
+  end
+
+  it "can reconstruct dimensions on demand" do
+    upload = UploadCreator.new(huge_image, "image.png").create_for(user_id)
+
+    upload.update_columns(width: nil, height: nil, thumbnail_width: nil, thumbnail_height: nil)
+
+    upload = Upload.find(upload.id)
+
+    expect(upload.width).to eq(64250)
+    expect(upload.height).to eq(64250)
+
+    upload.reload
+    expect(upload.read_attribute(:width)).to eq(64250)
+
+    upload.update_columns(width: nil, height: nil, thumbnail_width: nil, thumbnail_height: nil)
+
+    expect(upload.thumbnail_width).to eq(500)
+    expect(upload.thumbnail_height).to eq(500)
+  end
+
+  it "dimension calculation returns nil on missing image" do
+    upload = UploadCreator.new(huge_image, "image.png").create_for(user_id)
+    upload.update_columns(width: nil, height: nil, thumbnail_width: nil, thumbnail_height: nil)
+
+    missing_url = "wrong_folder#{upload.url}"
+    upload.update_columns(url: missing_url)
+    expect(upload.thumbnail_height).to eq(nil)
+    expect(upload.thumbnail_width).to eq(nil)
   end
 
   it "extracts file extension" do
@@ -53,17 +85,61 @@ describe Upload do
 
   it "should create an invalid upload when the filename is blank" do
     SiteSetting.authorized_extensions = "*"
-
-    created_upload = UploadCreator.new(image, nil).create_for(user_id)
+    created_upload = UploadCreator.new(attachment, nil).create_for(user_id)
     expect(created_upload.valid?).to eq(false)
   end
 
+  context ".extract_url" do
+    let(:url) { 'https://example.com/uploads/default/original/1X/d1c2d40ab994e8410c.png' }
+
+    it 'should return the right part of url' do
+      expect(Upload.extract_url(url).to_s).to eq('/original/1X/d1c2d40ab994e8410c.png')
+    end
+  end
+
   context ".get_from_url" do
-    let(:url) { "/uploads/default/original/3X/1/0/10f73034616a796dfd70177dc54b6def44c4ba6f.png" }
-    let(:upload) { Fabricate(:upload, url: url) }
+    let(:sha1) { "10f73034616a796dfd70177dc54b6def44c4ba6f" }
+    let(:upload) { Fabricate(:upload, sha1: sha1) }
 
     it "works when the file has been uploaded" do
       expect(Upload.get_from_url(upload.url)).to eq(upload)
+    end
+
+    describe 'for an extensionless url' do
+      before do
+        upload.update!(url: upload.url.sub('.png', ''))
+        upload.reload
+      end
+
+      it 'should return the right upload' do
+        expect(Upload.get_from_url(upload.url)).to eq(upload)
+      end
+    end
+
+    it "should return the right upload as long as the upload's URL matches" do
+      upload.update!(url: "/uploads/default/12345/971308e535305c51.png")
+
+      expect(Upload.get_from_url(upload.url)).to eq(upload)
+
+      expect(Upload.get_from_url("/uploads/default/123131/971308e535305c51.png"))
+        .to eq(nil)
+    end
+
+    describe 'for a url a tree' do
+      before do
+        upload.update!(url:
+          Discourse.store.get_path_for(
+            "original",
+            16001,
+            upload.sha1,
+            ".#{upload.extension}"
+          )
+        )
+      end
+
+      it 'should return the right upload' do
+        expect(Upload.get_from_url(upload.url)).to eq(upload)
+      end
     end
 
     it "works when using a cdn" do
@@ -92,8 +168,8 @@ describe Upload do
     end
 
     describe "s3 store" do
-      let(:path) { "/original/3X/1/0/10f73034616a796dfd70177dc54b6def44c4ba6f.png" }
-      let(:url) { "#{SiteSetting.Upload.absolute_base_url}#{path}" }
+      let(:upload) { Fabricate(:upload_s3) }
+      let(:path) { upload.url.sub(SiteSetting.Upload.s3_base_url, '') }
 
       before do
         SiteSetting.enable_s3_uploads = true
@@ -104,7 +180,7 @@ describe Upload do
 
       it "should return the right upload when using base url (not CDN) for s3" do
         upload
-        expect(Upload.get_from_url(url)).to eq(upload)
+        expect(Upload.get_from_url(upload.url)).to eq(upload)
       end
 
       describe 'when using a cdn' do
@@ -120,8 +196,6 @@ describe Upload do
         end
 
         describe 'when upload bucket contains subfolder' do
-          let(:url) { "#{SiteSetting.Upload.absolute_base_url}/path/path2#{path}" }
-
           before do
             SiteSetting.s3_upload_bucket = "s3-upload-bucket/path/path2"
           end
@@ -176,6 +250,21 @@ describe Upload do
     it "should be able to look up sha1 even with leading zeros" do
       sha1 = '0000c513e1da04f7b4e99230851ea2aafeb8cc4e'
       expect(Upload.sha1_from_short_url('upload://1Eg9p8rrCURq4T3a6iJUk0ri6.png')).to eq(sha1)
+    end
+  end
+
+  describe '#to_s' do
+    it 'should return the right value' do
+      expect(upload.to_s).to eq(upload.url)
+    end
+  end
+
+  describe '.migrate_to_new_scheme' do
+    it 'should not migrate system uploads' do
+      SiteSetting.migrate_to_new_scheme = true
+
+      expect { Upload.migrate_to_new_scheme }
+        .to_not change { Upload.pluck(:url) }
     end
   end
 

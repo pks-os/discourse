@@ -22,7 +22,7 @@ export default function(page) {
     },
 
     activate() {
-      this._super();
+      this._super(...arguments);
       jumpToElement(document.location.hash.substr(1));
     },
 
@@ -32,6 +32,10 @@ export default function(page) {
 
     setupController(controller, model) {
       this.controllerFor("static").set("model", model);
+    },
+
+    titleToken() {
+      return I18n.t(page);
     },
 
     actions: {

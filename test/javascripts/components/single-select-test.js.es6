@@ -488,7 +488,10 @@ componentTest("support modifying on select behavior through plugin api", {
       });
     });
 
-    this.set("content", [{ id: "1", name: "robin" }]);
+    this.set("content", [
+      { id: "1", name: "robin" },
+      { id: "2", name: "arpit", __sk_row_type: "noopRow" }
+    ]);
   },
 
   async test(assert) {
@@ -496,6 +499,41 @@ componentTest("support modifying on select behavior through plugin api", {
     await this.get("subject").selectRowByValue(1);
 
     assert.equal(find(".on-select-test").html(), "1");
+
+    await this.get("subject").expand();
+    await this.get("subject").selectRowByValue(2);
+
+    assert.equal(
+      find(".on-select-test").html(),
+      "2",
+      "it calls onSelect for noopRows"
+    );
+
+    clearCallbacks();
+  }
+});
+
+componentTest("support modifying on select none behavior through plugin api", {
+  template:
+    '<span class="on-select-none-test"></span>{{single-select none="none" content=content}}',
+
+  beforeEach() {
+    withPluginApi("0.8.25", api => {
+      api.modifySelectKit("select-kit").onSelectNone(() => {
+        find(".on-select-none-test").html("NONE");
+      });
+    });
+
+    this.set("content", [{ id: "1", name: "robin" }]);
+  },
+
+  async test(assert) {
+    await this.get("subject").expand();
+    await this.get("subject").selectRowByValue(1);
+    await this.get("subject").expand();
+    await this.get("subject").selectNoneRow();
+
+    assert.equal(find(".on-select-none-test").html(), "NONE");
 
     clearCallbacks();
   }
@@ -730,6 +768,7 @@ componentTest("with accents in content", {
 componentTest("with no content and allowAny", {
   template: "{{single-select allowAny=true}}",
 
+  skip: true,
   async test(assert) {
     await click(
       this.get("subject")
@@ -743,5 +782,144 @@ componentTest("with no content and allowAny", {
 
     assert.ok($filter.hasClass("is-focused"));
     assert.ok(!$filter.hasClass("is-hidden"));
+  }
+});
+
+componentTest("with forceEscape", {
+  template: "{{single-select content=content forceEscape=true}}",
+
+  beforeEach() {
+    this.set("content", ["<div>sam</div>"]);
+  },
+
+  async test(assert) {
+    await this.get("subject").expand();
+
+    const row = this.get("subject").rowByIndex(0);
+    assert.equal(
+      row
+        .el()
+        .find(".name")
+        .html()
+        .trim(),
+      "&lt;div&gt;sam&lt;/div&gt;"
+    );
+
+    assert.equal(
+      this.get("subject")
+        .header()
+        .el()
+        .find(".selected-name")
+        .html()
+        .trim(),
+      "&lt;div&gt;sam&lt;/div&gt;"
+    );
+  }
+});
+
+componentTest("without forceEscape", {
+  template: "{{single-select content=content forceEscape=false}}",
+
+  beforeEach() {
+    this.set("content", ["<div>sam</div>"]);
+  },
+
+  async test(assert) {
+    await this.get("subject").expand();
+
+    const row = this.get("subject").rowByIndex(0);
+    assert.equal(
+      row
+        .el()
+        .find(".name")
+        .html()
+        .trim(),
+      "<div>sam</div>"
+    );
+
+    assert.equal(
+      this.get("subject")
+        .header()
+        .el()
+        .find(".selected-name")
+        .html()
+        .trim(),
+      "<div>sam</div>"
+    );
+  }
+});
+
+componentTest("onSelect", {
+  template:
+    "<div class='test-external-action'></div>{{single-select content=content onSelect=(action externalAction)}}",
+
+  beforeEach() {
+    this.set("externalAction", actual => {
+      find(".test-external-action").text(actual);
+    });
+
+    this.set("content", ["red", "blue"]);
+  },
+
+  async test(assert) {
+    await this.get("subject").expand();
+    await this.get("subject").selectRowByValue("red");
+
+    assert.equal(
+      find(".test-external-action")
+        .text()
+        .trim(),
+      "red"
+    );
+  }
+});
+
+componentTest("onDeselect", {
+  template:
+    "<div class='test-external-action'></div>{{single-select content=content onDeselect=(action externalAction)}}",
+
+  beforeEach() {
+    this.set("externalAction", actual => {
+      find(".test-external-action").text(actual);
+    });
+
+    this.set("content", ["red", "blue"]);
+  },
+
+  async test(assert) {
+    await this.get("subject").expand();
+    await this.get("subject").selectRowByValue("red");
+    await this.get("subject").expand();
+    await this.get("subject").selectRowByValue("blue");
+
+    assert.equal(
+      find(".test-external-action")
+        .text()
+        .trim(),
+      "red"
+    );
+  }
+});
+
+componentTest("noopRow", {
+  template: "{{single-select value=value content=content}}",
+
+  beforeEach() {
+    this.set("value", "blue");
+    this.set("content", [
+      { id: "red", name: "Red", __sk_row_type: "noopRow" },
+      "blue",
+      "green"
+    ]);
+  },
+
+  async test(assert) {
+    await this.get("subject").expand();
+    await this.get("subject").selectRowByValue("red");
+    assert.equal(this.get("value"), "blue", "it doesn’t change the value");
+
+    await this.get("subject").expand();
+    await this.get("subject").selectRowByValue("green");
+    assert.equal(this.get("value"), "green");
   }
 });

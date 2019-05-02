@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe IncomingLink do
@@ -47,6 +49,12 @@ describe IncomingLink do
 
     def add(opts)
       IncomingLink.add(req(opts))
+    end
+
+    it "does not explode with bad username" do
+      add(
+        username: "test\0test"
+      )
     end
 
     it "does not explode with bad referer" do

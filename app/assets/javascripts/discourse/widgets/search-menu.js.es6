@@ -97,10 +97,6 @@ export default createWidget("search-menu", {
     const ctx = contextEnabled ? this.searchContext() : null;
     const type = ctx ? Ember.get(ctx, "type") : null;
 
-    if (contextEnabled && type === "topic") {
-      return;
-    }
-
     let url = "/search";
     const params = [];
 
@@ -182,7 +178,6 @@ export default createWidget("search-menu", {
   },
 
   html(attrs) {
-    searchData.contextEnabled = attrs.contextEnabled;
     const searchContext = this.searchContext();
 
     const shouldTriggerSearch =
@@ -196,13 +191,15 @@ export default createWidget("search-menu", {
       this.triggerSearch();
     }
 
+    searchData.contextEnabled = attrs.contextEnabled;
+
     return this.attach("menu-panel", {
       maxWidth: 500,
       contents: () => this.panelContents()
     });
   },
 
-  clickOutside() {
+  mouseDownOutside() {
     this.sendWidgetAction("toggleSearchMenu");
   },
 
@@ -314,8 +311,6 @@ export default createWidget("search-menu", {
     if (url) {
       this.sendWidgetEvent("linkClicked");
       DiscourseURL.routeTo(url);
-    } else if (searchData.contextEnabled) {
-      this.triggerSearch();
     }
   }
 });

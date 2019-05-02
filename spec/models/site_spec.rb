@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 require_dependency 'site'
 
@@ -17,9 +19,9 @@ describe Site do
   end
 
   it "includes user themes and expires them as needed" do
-    default_theme = Theme.create!(user_id: -1, name: 'default')
+    default_theme = Fabricate(:theme)
     SiteSetting.default_theme_id = default_theme.id
-    user_theme = Theme.create!(user_id: -1, name: 'user theme', user_selectable: true)
+    user_theme = Fabricate(:theme, user_selectable: true)
 
     anon_guardian = Guardian.new
     user_guardian = Guardian.new(Fabricate(:user))
@@ -66,10 +68,34 @@ describe Site do
     expect(Site.new(guardian).categories).not_to include(sub_category)
   end
 
+  it "omits groups user can not see" do
+    user = Fabricate(:user)
+    site = Site.new(Guardian.new(user))
+
+    staff_group = Fabricate(:group, visibility_level: Group.visibility_levels[:staff])
+    expect(site.groups.pluck(:name)).not_to include(staff_group.name)
+
+    public_group = Fabricate(:group)
+    expect(site.groups.pluck(:name)).to include(public_group.name)
+
+    admin = Fabricate(:admin)
+    site = Site.new(Guardian.new(admin))
+    expect(site.groups.pluck(:name)).to include(staff_group.name, public_group.name, "everyone")
+  end
+
   it "includes all enabled authentication providers" do
     SiteSetting.enable_twitter_logins = true
     SiteSetting.enable_facebook_logins = true
-    expect(Site.new(Guardian.new).auth_providers.map(&:name)).to contain_exactly('facebook', 'twitter')
+    data = JSON.parse(Site.json_for(Guardian.new))
+    expect(data["auth_providers"].map { |a| a["name"] }).to contain_exactly('facebook', 'twitter')
+  end
+
+  it "includes all enabled authentication providers for anon when login_required" do
+    SiteSetting.login_required = true
+    SiteSetting.enable_twitter_logins = true
+    SiteSetting.enable_facebook_logins = true
+    data = JSON.parse(Site.json_for(Guardian.new))
+    expect(data["auth_providers"].map { |a| a["name"] }).to contain_exactly('facebook', 'twitter')
   end
 
 end

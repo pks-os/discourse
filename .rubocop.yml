@@ -102,6 +102,9 @@ Layout/EndAlignment:
 Lint/RequireParentheses:
   Enabled: true
 
+Lint/ShadowingOuterLocalVariable:
+  Enabled: true
+
 Layout/MultilineMethodCallIndentation:
   Enabled: true
   EnforcedStyle: indented
@@ -111,3 +114,10 @@ Layout/AlignHash:
 
 Bundler/OrderedGems:
   Enabled: false
+
+Style/SingleLineMethods:
+  Enabled: true
+
+Style/Semicolon:
+  Enabled: true
+  AllowAsExpressionSeparator: true

@@ -5,7 +5,10 @@ class UploadSerializer < ApplicationSerializer
              :filesize,
              :width,
              :height,
+             :thumbnail_width,
+             :thumbnail_height,
              :extension,
              :short_url,
-             :retain_hours
+             :retain_hours,
+             :human_filesize
 end

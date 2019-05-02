@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe UserProfile do
@@ -38,7 +40,7 @@ describe UserProfile do
   end
 
   describe 'new' do
-    let(:user_profile) { Fabricate.build(:user_profile) }
+    let(:user_profile) { UserProfile.new(bio_raw: "test") }
 
     it 'is not valid without user' do
       expect(user_profile.valid?).to be false
@@ -126,7 +128,7 @@ describe UserProfile do
     end
 
     it 'supports emoji images' do
-      expect(user.user_profile.bio_excerpt(500, keep_emoji_images: true)).to eq("hello <img src=\"#{upload.url}?v=5\" title=\":test:\" class=\"emoji emoji-custom\" alt=\":test:\"> <img src=\"/images/emoji/twitter/woman_scientist/5.png?v=5\" title=\":woman_scientist:t5:\" class=\"emoji\" alt=\":woman_scientist:t5:\"> <img src=\"/images/emoji/twitter/thinking.png?v=5\" title=\":thinking:\" class=\"emoji\" alt=\":thinking:\">")
+      expect(user.user_profile.bio_excerpt(500, keep_emoji_images: true)).to eq("hello <img src=\"#{upload.url}?v=#{Emoji::EMOJI_VERSION}\" title=\":test:\" class=\"emoji emoji-custom\" alt=\":test:\"> <img src=\"/images/emoji/twitter/woman_scientist/5.png?v=#{Emoji::EMOJI_VERSION}\" title=\":woman_scientist:t5:\" class=\"emoji\" alt=\":woman_scientist:t5:\"> <img src=\"/images/emoji/twitter/thinking.png?v=#{Emoji::EMOJI_VERSION}\" title=\":thinking:\" class=\"emoji\" alt=\":thinking:\">")
     end
   end
 

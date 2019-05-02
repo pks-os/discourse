@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 RSpec.describe TopicsController do
@@ -241,6 +243,139 @@ RSpec.describe TopicsController do
         end
       end
     end
+
+    describe 'moving to a new message' do
+      let(:user) { Fabricate(:user) }
+      let(:trust_level_4) { Fabricate(:trust_level_4) }
+      let(:moderator) { Fabricate(:moderator) }
+      let!(:message) { Fabricate(:private_message_topic) }
+      let!(:p1) { Fabricate(:post, user: user, post_number: 1, topic: message) }
+      let!(:p2) { Fabricate(:post, user: user, post_number: 2, topic: message) }
+
+      it "raises an error without post_ids" do
+        sign_in(moderator)
+        post "/t/#{message.id}/move-posts.json", params: { title: 'blah', archetype: 'private_message' }
+        expect(response.status).to eq(400)
+      end
+
+      it "raises an error when the user doesn't have permission to move the posts" do
+        sign_in(trust_level_4)
+
+        post "/t/#{message.id}/move-posts.json", params: {
+          title: 'blah', post_ids: [p1.post_number, p2.post_number], archetype: 'private_message'
+        }
+
+        expect(response.status).to eq(403)
+        result = ::JSON.parse(response.body)
+        expect(result['errors']).to be_present
+      end
+
+      context 'success' do
+        before { sign_in(Fabricate(:admin)) }
+
+        it "returns success" do
+          SiteSetting.allow_staff_to_tag_pms = true
+
+          expect do
+            post "/t/#{message.id}/move-posts.json", params: {
+              title: 'Logan is a good movie',
+              post_ids: [p2.id],
+              archetype: 'private_message',
+              tags: ["tag1", "tag2"]
+            }
+          end.to change { Topic.count }.by(1)
+
+          expect(response.status).to eq(200)
+
+          result = ::JSON.parse(response.body)
+
+          expect(result['success']).to eq(true)
+          expect(result['url']).to eq(Topic.last.relative_url)
+          expect(Tag.all.pluck(:name)).to contain_exactly("tag1", "tag2")
+        end
+
+        describe 'when message has been deleted' do
+          it 'should still be able to move posts' do
+            PostDestroyer.new(Fabricate(:admin), message.first_post).destroy
+
+            expect(message.reload.deleted_at).to_not be_nil
+
+            expect do
+              post "/t/#{message.id}/move-posts.json", params: {
+                title: 'Logan is a good movie',
+                post_ids: [p2.id],
+                archetype: 'private_message'
+              }
+            end.to change { Topic.count }.by(1)
+
+            expect(response.status).to eq(200)
+
+            result = JSON.parse(response.body)
+
+            expect(result['success']).to eq(true)
+            expect(result['url']).to eq(Topic.last.relative_url)
+          end
+        end
+      end
+
+      context 'failure' do
+        it "returns JSON with a false success" do
+          sign_in(moderator)
+          post "/t/#{message.id}/move-posts.json", params: {
+            post_ids: [p2.id],
+            archetype: 'private_message'
+          }
+          expect(response.status).to eq(200)
+          result = ::JSON.parse(response.body)
+          expect(result['success']).to eq(false)
+          expect(result['url']).to be_blank
+        end
+      end
+    end
+
+    describe 'moving to an existing message' do
+      let!(:user) { sign_in(Fabricate(:admin)) }
+      let(:trust_level_4) { Fabricate(:trust_level_4) }
+      let(:evil_trout) { Fabricate(:evil_trout) }
+      let(:message) { Fabricate(:private_message_topic) }
+      let(:p2) { Fabricate(:post, user: evil_trout, post_number: 2, topic: message) }
+
+      let(:dest_message) do
+        Fabricate(:private_message_topic, user: trust_level_4, topic_allowed_users: [
+          Fabricate.build(:topic_allowed_user, user: evil_trout)
+        ])
+      end
+
+      context 'success' do
+        it "returns success" do
+          user
+          post "/t/#{message.id}/move-posts.json", params: {
+            post_ids: [p2.id],
+            destination_topic_id: dest_message.id,
+            archetype: 'private_message'
+          }
+
+          expect(response.status).to eq(200)
+          result = ::JSON.parse(response.body)
+          expect(result['success']).to eq(true)
+          expect(result['url']).to be_present
+        end
+      end
+
+      context 'failure' do
+        it "returns JSON with a false success" do
+          post "/t/#{message.id}/move-posts.json", params: {
+            post_ids: [p2.id],
+            archetype: 'private_message'
+          }
+
+          expect(response.status).to eq(200)
+          result = ::JSON.parse(response.body)
+          expect(result['success']).to eq(false)
+          expect(result['url']).to be_blank
+        end
+      end
+    end
   end
 
   describe '#merge_topic' do
@@ -251,7 +386,7 @@ RSpec.describe TopicsController do
       expect(response.status).to eq(403)
     end
 
-    describe 'moving to a new topic' do
+    describe 'merging into another topic' do
       let(:moderator) { Fabricate(:moderator) }
       let(:user) { Fabricate(:user) }
       let(:p1) { Fabricate(:post, user: user) }
@@ -276,6 +411,53 @@ RSpec.describe TopicsController do
           sign_in(moderator)
           post "/t/#{topic.id}/merge-topic.json", params: {
             destination_topic_id: dest_topic.id
+          }
+
+          expect(response.status).to eq(200)
+          result = ::JSON.parse(response.body)
+          expect(result['success']).to eq(true)
+          expect(result['url']).to be_present
+        end
+      end
+    end
+
+    describe 'merging into another message' do
+      let(:moderator) { Fabricate(:moderator) }
+      let(:user) { Fabricate(:user) }
+      let(:trust_level_4) { Fabricate(:trust_level_4) }
+      let(:message) { Fabricate(:private_message_topic, user: user) }
+      let!(:p1) { Fabricate(:post, topic: message, user: trust_level_4) }
+      let!(:p2) { Fabricate(:post, topic: message, reply_to_post_number: p1.post_number, user: user) }
+
+      it "raises an error without destination_topic_id" do
+        sign_in(moderator)
+        post "/t/#{message.id}/merge-topic.json", params: {
+          archetype: 'private_message'
+        }
+        expect(response.status).to eq(400)
+      end
+
+      it "raises an error when the user doesn't have permission to merge" do
+        sign_in(trust_level_4)
+        post "/t/#{message.id}/merge-topic.json", params: {
+          destination_topic_id: 345,
+          archetype: 'private_message'
+        }
+        expect(response).to be_forbidden
+      end
+
+      let(:dest_message) do
+        Fabricate(:private_message_topic, user: trust_level_4, topic_allowed_users: [
+          Fabricate.build(:topic_allowed_user, user: moderator)
+        ])
+      end
+
+      context 'moves all the posts to the destination message' do
+        it "returns success" do
+          sign_in(moderator)
+          post "/t/#{message.id}/merge-topic.json", params: {
+            destination_topic_id: dest_message.id,
+            archetype: 'private_message'
           }
 
           expect(response.status).to eq(200)
@@ -391,19 +573,17 @@ RSpec.describe TopicsController do
       expect(response.status).to eq(403)
     end
 
-    [:moderator, :trust_level_4].each do |user|
-      describe "forbidden to #{user}" do
-        let!(user) { sign_in(Fabricate(user)) }
+    describe "forbidden to trust_level_4" do
+      let!(:trust_level_4) { sign_in(Fabricate(:trust_level_4)) }
 
-        it 'correctly denies' do
-          put "/t/1/change-timestamp.json", params: params
-          expect(response).to be_forbidden
-        end
+      it 'correctly denies' do
+        put "/t/1/change-timestamp.json", params: params
+        expect(response).to be_forbidden
       end
     end
 
     describe 'changing timestamps' do
-      let!(:admin) { sign_in(Fabricate(:admin)) }
+      let!(:moderator) { sign_in(Fabricate(:moderator)) }
       let(:old_timestamp) { Time.zone.now }
       let(:new_timestamp) { old_timestamp - 1.day }
       let!(:topic) { Fabricate(:topic, created_at: old_timestamp) }
@@ -423,6 +603,18 @@ RSpec.describe TopicsController do
         expect(topic.reload.created_at).to be_within_one_second_of(new_timestamp)
         expect(p1.reload.created_at).to be_within_one_second_of(new_timestamp)
         expect(p2.reload.created_at).to be_within_one_second_of(old_timestamp)
+      end
+
+      it 'should create a staff log entry' do
+        put "/t/#{topic.id}/change-timestamp.json", params: {
+          timestamp: new_timestamp.to_f
+        }
+
+        log = UserHistory.last
+        expect(log.acting_user_id).to eq(moderator.id)
+        expect(log.topic_id).to eq(topic.id)
+        expect(log.new_value).to eq(new_timestamp.utc.to_s)
+        expect(log.previous_value).to eq(old_timestamp.utc.to_s)
       end
     end
   end
@@ -529,6 +721,76 @@ RSpec.describe TopicsController do
       end
     end
 
+    context 'for last post only' do
+
+      it 'should allow you to retain topic timing but remove last post only' do
+        freeze_time
+
+        post1 = create_post
+        user = post1.user
+
+        topic = post1.topic
+
+        post2 = create_post(topic_id: topic.id)
+
+        PostTiming.create!(topic: topic, user: user, post_number: 2, msecs: 100)
+
+        user.user_stat.update!(first_unread_at: Time.now + 1.week)
+
+        topic_user = TopicUser.find_by(
+          topic_id: topic.id,
+          user_id: user.id,
+        )
+
+        topic_user.update!(
+          last_read_post_number: 2,
+          highest_seen_post_number: 2
+        )
+
+        # ensure we have 2 notifications
+        # fake notification on topic but it is read
+        first_notification = Notification.create!(
+          user_id: user.id,
+          topic_id: topic.id,
+          data: "{}",
+          read: true,
+          notification_type: 1
+        )
+
+        freeze_time 1.minute.from_now
+        PostAlerter.post_created(post2)
+
+        second_notification = user.notifications.where(topic_id: topic.id).order(created_at: :desc).first
+        second_notification.update!(read: true)
+
+        sign_in(user)
+
+        delete "/t/#{topic.id}/timings.json?last=1"
+
+        expect(PostTiming.where(topic: topic, user: user, post_number: 2).exists?).to eq(false)
+        expect(PostTiming.where(topic: topic, user: user, post_number: 1).exists?).to eq(true)
+
+        expect(TopicUser.where(topic: topic, user: user, last_read_post_number: 1, highest_seen_post_number: 1).exists?).to eq(true)
+
+        user.user_stat.reload
+        expect(user.user_stat.first_unread_at).to eq_time(topic.updated_at)
+
+        first_notification.reload
+        second_notification.reload
+        expect(first_notification.read).to eq(true)
+        expect(second_notification.read).to eq(false)
+
+        PostDestroyer.new(Fabricate(:admin), post2).destroy
+
+        delete "/t/#{topic.id}/timings.json?last=1"
+
+        expect(PostTiming.where(topic: topic, user: user, post_number: 1).exists?).to eq(false)
+        expect(TopicUser.where(topic: topic, user: user, last_read_post_number: nil, highest_seen_post_number: nil).exists?).to eq(true)
+
+      end
+
+    end
+
     context 'when logged in' do
       before do
         @user = sign_in(Fabricate(:user))
@@ -604,7 +866,7 @@ RSpec.describe TopicsController do
     describe 'when logged in' do
       let(:user) { Fabricate(:user) }
       let(:moderator) { Fabricate(:moderator) }
-      let(:topic) { Fabricate(:topic, user: user) }
+      let(:topic) { Fabricate(:topic, user: user, created_at: 48.hours.ago) }
       let!(:post) { Fabricate(:post, topic: topic, user: user, post_number: 1) }
 
       describe 'without access' do
@@ -779,6 +1041,68 @@ RSpec.describe TopicsController do
 
               expect(response.status).to eq(200)
             end
+          end
+        end
+
+        context 'updating to a category with restricted tags' do
+          let!(:category) { Fabricate(:category) }
+          let!(:restricted_category) { Fabricate(:category) }
+          let!(:tag1) { Fabricate(:tag) }
+          let!(:tag2) { Fabricate(:tag) }
+          let!(:tag_group_1) { Fabricate(:tag_group, tag_names: [tag1.name]) }
+          let!(:tag_group_2) { Fabricate(:tag_group) }
+
+          before do
+            SiteSetting.tagging_enabled = true
+            topic.update!(tags: [tag1])
+          end
+
+          it 'can’t change to a category disallowing this topic current tags' do
+            restricted_category.allowed_tags = [tag2.name]
+
+            put "/t/#{topic.slug}/#{topic.id}.json", params: { category_id: restricted_category.id }
+
+            result = ::JSON.parse(response.body)
+
+            expect(response.status).to eq(422)
+            expect(result['errors']).to be_present
+            expect(topic.reload.category_id).not_to eq(restricted_category.id)
+          end
+
+          it 'can’t change to a category disallowing this topic current tag (through tag_group)' do
+            tag_group_2.tags = [tag2]
+            restricted_category.allowed_tag_groups = [tag_group_2.name]
+
+            put "/t/#{topic.slug}/#{topic.id}.json", params: { category_id: restricted_category.id }
+
+            result = ::JSON.parse(response.body)
+
+            expect(response.status).to eq(422)
+            expect(result['errors']).to be_present
+            expect(topic.reload.category_id).not_to eq(restricted_category.id)
+          end
+
+          it 'can change to a category allowing this topic current tags' do
+            restricted_category.allowed_tags = [tag1.name]
+
+            put "/t/#{topic.slug}/#{topic.id}.json", params: { category_id: restricted_category.id }
+
+            expect(response.status).to eq(200)
+          end
+
+          it 'can change to a category allowing this topic current tags (through tag_group)' do
+            tag_group_1.tags = [tag1]
+            restricted_category.allowed_tag_groups = [tag_group_1.name]
+
+            put "/t/#{topic.slug}/#{topic.id}.json", params: { category_id: restricted_category.id }
+
+            expect(response.status).to eq(200)
+          end
+
+          it 'can change to a category allowing any tag' do
+            put "/t/#{topic.slug}/#{topic.id}.json", params: { category_id: category.id }
+
+            expect(response.status).to eq(200)
           end
         end
 
@@ -1057,6 +1381,18 @@ RSpec.describe TopicsController do
       end.to change(TopicViewItem, :count).by(1)
     end
 
+    it 'records a view to invalid post_number' do
+      user = Fabricate(:user)
+
+      expect do
+        get "/t/#{topic.slug}/#{topic.id}/#{256**4}", params: {
+          u: user.username
+        }
+        expect(response.status).to eq(200)
+      end.to change { IncomingLink.count }.by(1)
+
+    end
+
     it 'records incoming links' do
       user = Fabricate(:user)
 
@@ -1216,48 +1552,6 @@ RSpec.describe TopicsController do
       get "/t/#{topic.slug}/#{topic.id}.json"
 
       expect(response.headers['X-Robots-Tag']).to eq(nil)
-    end
-
-    describe "themes" do
-      let(:theme) { Theme.create!(user_id: -1, name: 'bob', user_selectable: true) }
-      let(:theme2) { Theme.create!(user_id: -1, name: 'bobbob', user_selectable: true) }
-
-      before do
-        sign_in(user)
-      end
-
-      it "selects the theme the user has selected" do
-        user.user_option.update_columns(theme_ids: [theme.id])
-
-        get "/t/#{topic.id}"
-        expect(response).to be_redirect
-        expect(controller.theme_id).to eq(theme.id)
-
-        theme.update_attribute(:user_selectable, false)
-
-        get "/t/#{topic.id}"
-        expect(response).to be_redirect
-        expect(controller.theme_id).not_to eq(theme.id)
-      end
-
-      it "can be overridden with a cookie" do
-        user.user_option.update_columns(theme_ids: [theme.id])
-
-        cookies['theme_ids'] = "#{theme2.id}|#{user.user_option.theme_key_seq}"
-
-        get "/t/#{topic.id}"
-        expect(response).to be_redirect
-        expect(controller.theme_id).to eq(theme2.id)
-      end
-
-      it "cookie can fail back to user if out of sync" do
-        user.user_option.update_columns(theme_ids: [theme.id])
-        cookies['theme_ids'] = "#{theme2.id}|#{user.user_option.theme_key_seq - 1}"
-
-        get "/t/#{topic.id}"
-        expect(response).to be_redirect
-        expect(controller.theme_id).to eq(theme.id)
-      end
     end
 
     it "doesn't store an incoming link when there's no referer" do
@@ -1449,6 +1743,17 @@ RSpec.describe TopicsController do
         expect(response.headers['Discourse-Readonly']).to eq('true')
       end
     end
+
+    describe "image only topic" do
+      it "uses image alt tag for meta description" do
+        post = Fabricate(:post, raw: "![image_description|690x405](upload://sdtr5O5xaxf0iEOxICxL36YRj86.png)")
+
+        get post.topic.url
+
+        body = response.body
+        expect(body).to have_tag(:meta, with: { name: 'description', content: '[image_description]' })
+      end
+    end
   end
 
   describe '#post_ids' do
@@ -1520,6 +1825,9 @@ RSpec.describe TopicsController do
     let(:topic) { post.topic }
 
     it 'returns first post of the topic' do
+      # we need one for suggested
+      create_post
+
       get "/t/#{topic.id}/posts.json"
 
       expect(response.status).to eq(200)
@@ -1527,6 +1835,13 @@ RSpec.describe TopicsController do
       body = JSON.parse(response.body)
 
       expect(body["post_stream"]["posts"].first["id"]).to eq(post.id)
+
+      expect(body["suggested_topics"]).to eq(nil)
+
+      get "/t/#{topic.id}/posts.json?include_suggested=true"
+      body = JSON.parse(response.body)
+
+      expect(body["suggested_topics"]).not_to eq(nil)
     end
 
     describe 'filtering by post number with filters' do
@@ -1582,6 +1897,15 @@ RSpec.describe TopicsController do
       expect(response.status).to eq(200)
       expect(response.content_type).to eq('application/rss+xml')
     end
+
+    it 'renders rss of the topic correctly with subfolder' do
+      GlobalSetting.stubs(:relative_url_root).returns('/forum')
+      Discourse.stubs(:base_uri).returns("/forum")
+      get "/t/foo/#{topic.id}.rss"
+      expect(response.status).to eq(200)
+      expect(response.body).to_not include("/forum/forum")
+      expect(response.body).to include("http://test.localhost/forum/t/#{topic.slug}")
+    end
   end
 
   describe '#invite_group' do
@@ -1616,8 +1940,8 @@ RSpec.describe TopicsController do
 
   describe '#make_banner' do
     it 'needs you to be a staff member' do
-      sign_in(Fabricate(:user))
-      put "/t/99/make-banner.json"
+      topic = Fabricate(:topic, user: sign_in(Fabricate(:trust_level_4)))
+      put "/t/#{topic.id}/make-banner.json"
       expect(response).to be_forbidden
     end
 
@@ -1635,8 +1959,8 @@ RSpec.describe TopicsController do
 
   describe '#remove_banner' do
     it 'needs you to be a staff member' do
-      sign_in(Fabricate(:user))
-      put "/t/99/remove-banner.json"
+      topic = Fabricate(:topic, user: sign_in(Fabricate(:trust_level_4)), archetype: Archetype.banner)
+      put "/t/#{topic.id}/remove-banner.json"
       expect(response).to be_forbidden
     end
 
@@ -1722,7 +2046,7 @@ RSpec.describe TopicsController do
       post = create_post
       post2 = create_post(topic_id: post.topic_id)
 
-      PostAction.act(user, post2, bookmark)
+      PostActionCreator.new(user, post2, bookmark).perform
 
       put "/t/#{post.topic_id}/bookmark.json"
       expect(PostAction.where(user_id: user.id, post_action_type: bookmark).count).to eq(2)
@@ -1815,6 +2139,7 @@ RSpec.describe TopicsController do
     describe 'converting public topic to private message' do
       let(:user) { Fabricate(:user) }
       let(:topic) { Fabricate(:topic, user: user) }
+      let!(:post) { Fabricate(:post, topic: topic) }
 
       it "raises an error when the user doesn't have permission to convert topic" do
         sign_in(Fabricate(:user))
@@ -1841,6 +2166,7 @@ RSpec.describe TopicsController do
     describe 'converting private message to public topic' do
       let(:user) { Fabricate(:user) }
       let(:topic) { Fabricate(:private_message_topic, user: user) }
+      let!(:post) { Fabricate(:post, topic: topic) }
 
       it "raises an error when the user doesn't have permission to convert topic" do
         sign_in(Fabricate(:user))
@@ -2043,13 +2369,45 @@ RSpec.describe TopicsController do
         let(:recipient) { 'jake@adventuretime.ooo' }
 
         it "should attach group to the invite" do
-
           post "/t/#{group_private_topic.id}/invite.json", params: {
-            user: recipient
+            user: recipient,
+            group_ids: "#{group.id},123"
           }
 
           expect(response.status).to eq(200)
           expect(Invite.find_by(email: recipient).groups).to eq([group])
+        end
+
+        describe 'when group is available to automatic groups only' do
+          before do
+            group.update!(automatic: true)
+          end
+
+          it 'should return the right response' do
+            post "/t/#{group_private_topic.id}/invite.json", params: {
+              user: Fabricate(:user)
+            }
+
+            expect(response.status).to eq(403)
+          end
+        end
+
+        describe 'when user is not part of the required group' do
+          it 'should return the right response' do
+            post "/t/#{group_private_topic.id}/invite.json", params: {
+              user: Fabricate(:user)
+            }
+
+            expect(response.status).to eq(422)
+
+            response_body = JSON.parse(response.body)
+
+            expect(response_body["errors"]).to eq([
+              I18n.t("topic_invite.failed_to_invite",
+                group_names: group.name
+              )
+            ])
+          end
         end
       end
 
@@ -2066,6 +2424,37 @@ RSpec.describe TopicsController do
       it 'requires an email parameter' do
         post "/t/#{topic.id}/invite.json"
         expect(response.status).to eq(400)
+      end
+
+      describe "when PM has reached maximum allowed numbers of recipients" do
+        let(:user2) { Fabricate(:user) }
+        let(:pm) { Fabricate(:private_message_topic, user: user) }
+
+        let(:moderator) { Fabricate(:moderator) }
+        let(:moderator_pm) { Fabricate(:private_message_topic, user: moderator) }
+
+        before do
+          SiteSetting.max_allowed_message_recipients = 2
+        end
+
+        it "doesn't allow normal users to invite" do
+          post "/t/#{pm.id}/invite.json", params: {
+            user: user2.username
+          }
+          expect(response.status).to eq(422)
+          expect(JSON.parse(response.body)["errors"]).to contain_exactly(
+            I18n.t("pm_reached_recipients_limit", recipients_limit: SiteSetting.max_allowed_message_recipients)
+          )
+        end
+
+        it "allows staff to bypass limits" do
+          sign_in(moderator)
+          post "/t/#{moderator_pm.id}/invite.json", params: {
+            user: user2.username
+          }
+          expect(response.status).to eq(200)
+          expect(moderator_pm.reload.topic_allowed_users.count).to eq(3)
+        end
       end
 
       describe 'when user does not have permission to invite to the topic' do
@@ -2157,11 +2546,41 @@ RSpec.describe TopicsController do
         expect(pm.allowed_groups.first.id).to eq(admins.id)
       end
     end
+
+    context "when PM has reached maximum allowed numbers of recipients" do
+      let(:group) { Fabricate(:group, messageable_level: 99) }
+      let(:pm) { Fabricate(:private_message_topic, user: user) }
+
+      let(:moderator) { Fabricate(:moderator) }
+      let(:moderator_pm) { Fabricate(:private_message_topic, user: moderator) }
+
+      before do
+        SiteSetting.max_allowed_message_recipients = 2
+      end
+
+      it "doesn't allow normal users to invite" do
+        post "/t/#{pm.id}/invite-group.json", params: {
+          group: group.name
+        }
+        expect(response.status).to eq(422)
+        expect(JSON.parse(response.body)["errors"]).to contain_exactly(
+          I18n.t("pm_reached_recipients_limit", recipients_limit: SiteSetting.max_allowed_message_recipients)
+        )
+      end
+
+      it "allows staff to bypass limits" do
+        sign_in(moderator)
+        post "/t/#{moderator_pm.id}/invite-group.json", params: {
+          group: group.name
+        }
+        expect(response.status).to eq(200)
+        expect(moderator_pm.reload.topic_allowed_users.count + moderator_pm.topic_allowed_groups.count).to eq(3)
+      end
+    end
   end
 
   describe 'shared drafts' do
     let(:shared_drafts_category) { Fabricate(:category) }
-    let(:category) { Fabricate(:category) }
 
     before do
       SiteSetting.shared_drafts_category = shared_drafts_category.id
@@ -2209,7 +2628,7 @@ RSpec.describe TopicsController do
     describe "#publish" do
       let(:category) { Fabricate(:category) }
       let(:topic) { Fabricate(:topic, category: shared_drafts_category, visible: false) }
-      let(:shared_draft) { Fabricate(:shared_draft, topic: topic, category: category) }
+      let!(:post) { Fabricate(:post, topic: topic) }
       let(:moderator) { Fabricate(:moderator) }
 
       it "fails for anonymous users" do
@@ -2308,4 +2727,41 @@ RSpec.describe TopicsController do
 
   end
 
+  describe "#reset_bump_date" do
+    context "errors" do
+      let(:topic) { Fabricate(:topic) }
+
+      it "needs you to be logged in" do
+        put "/t/#{topic.id}/reset-bump-date.json"
+        expect(response.status).to eq(403)
+      end
+
+      [:user].each do |user|
+        it "denies access for #{user}" do
+          sign_in(Fabricate(user))
+          put "/t/#{topic.id}/reset-bump-date.json"
+          expect(response.status).to eq(403)
+        end
+      end
+
+      it "should fail for non-existend topic" do
+        sign_in(Fabricate(:admin))
+        put "/t/1/reset-bump-date.json"
+        expect(response.status).to eq(404)
+      end
+    end
+
+    [:admin, :moderator, :trust_level_4].each do |user|
+      it "should reset bumped_at as #{user}" do
+        sign_in(Fabricate(user))
+        topic = Fabricate(:topic, bumped_at: 1.hour.ago)
+        timestamp = 1.day.ago
+        Fabricate(:post, topic: topic, created_at: timestamp)
+
+        put "/t/#{topic.id}/reset-bump-date.json"
+        expect(response.status).to eq(200)
+        expect(topic.reload.bumped_at).to be_within_one_second_of(timestamp)
+      end
+    end
+  end
 end

@@ -1,4 +1,6 @@
 import GrantBadgeController from "discourse/mixins/grant-badge-controller";
+import { popupAjaxError } from "discourse/lib/ajax-error";
+import computed from "ember-addons/ember-computed-decorators";
 
 export default Ember.Controller.extend(GrantBadgeController, {
   adminUser: Ember.inject.controller(),
@@ -9,27 +11,25 @@ export default Ember.Controller.extend(GrantBadgeController, {
   sortedBadges: Ember.computed.sort("model", "badgeSortOrder"),
   badgeSortOrder: ["granted_at:desc"],
 
-  groupedBadges: function() {
+  @computed("model", "model.[]", "model.expandedBadges.[]")
+  groupedBadges() {
     const allBadges = this.get("model");
 
     var grouped = _.groupBy(allBadges, badge => badge.badge_id);
 
     var expanded = [];
-    const expandedBadges = allBadges.get("expandedBadges");
+    const expandedBadges = allBadges.get("expandedBadges") || [];
 
     _(grouped).each(function(badges) {
       var lastGranted = badges[0].granted_at;
 
-      _.each(badges, function(badge) {
+      badges.forEach(badge => {
         lastGranted =
           lastGranted < badge.granted_at ? badge.granted_at : lastGranted;
       });
 
-      if (
-        badges.length === 1 ||
-        _.include(expandedBadges, badges[0].badge.id)
-      ) {
-        _.each(badges, badge => expanded.push(badge));
+      if (badges.length === 1 || expandedBadges.includes(badges[0].badge.id)) {
+        badges.forEach(badge => expanded.push(badge));
         return;
       }
 
@@ -48,7 +48,7 @@ export default Ember.Controller.extend(GrantBadgeController, {
       .sortBy(group => group.granted_at)
       .reverse()
       .value();
-  }.property("model", "model.[]", "model.expandedBadges.[]"),
+  },
 
   actions: {
     expandGroup: function(userBadge) {
@@ -73,9 +73,8 @@ export default Ember.Controller.extend(GrantBadgeController, {
             }
           });
         },
-        function() {
-          // Failure
-          bootbox.alert(I18n.t("generic_error"));
+        function(error) {
+          popupAjaxError(error);
         }
       );
     },

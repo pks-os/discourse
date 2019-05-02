@@ -6,8 +6,10 @@ function addLocalDate(buffer, matches, state) {
   let config = {
     date: null,
     time: null,
-    format: "YYYY-MM-DD HH:mm",
-    timezones: ""
+    timezone: null,
+    format: null,
+    timezones: null,
+    displayedTimezone: null
   };
 
   let parsed = parseBBCodeTag(
@@ -17,49 +19,110 @@ function addLocalDate(buffer, matches, state) {
   );
 
   config.date = parsed.attrs.date;
+  config.format = parsed.attrs.format;
+  config.calendar = parsed.attrs.calendar;
   config.time = parsed.attrs.time;
+  config.timezone = parsed.attrs.timezone;
   config.recurring = parsed.attrs.recurring;
-  config.format = parsed.attrs.format || config.format;
-  config.timezones = parsed.attrs.timezones || config.timezones;
+  config.timezones = parsed.attrs.timezones;
+  config.displayedTimezone = parsed.attrs.displayedTimezone;
 
   token = new state.Token("span_open", "span", 1);
-  token.attrs = [
-    ["class", "discourse-local-date"],
-    ["data-date", config.date],
-    ["data-time", config.time],
-    ["data-format", config.format],
-    ["data-timezones", config.timezones]
-  ];
-  if (config.recurring) {
-    token.attrs.push(["data-recurring", config.recurring]);
+  token.attrs = [["data-date", state.md.utils.escapeHtml(config.date)]];
+
+  if (!config.date.match(/\d{4}-\d{2}-\d{2}/)) {
+    closeBuffer(buffer, state, moment.invalid().format());
+    return;
   }
-  buffer.push(token);
 
-  const previews = config.timezones
-    .split("|")
-    .filter(t => t)
-    .map(timezone => {
-      const dateTime = moment
-        .utc(`${config.date} ${config.time}`, "YYYY-MM-DD HH:mm")
-        .tz(timezone)
-        .format(config.format);
+  if (config.time && !config.time.match(/\d{2}:\d{2}(?::\d{2})?/)) {
+    closeBuffer(buffer, state, moment.invalid().format());
+    return;
+  }
 
-      const formattedTimezone = timezone.replace("/", ": ").replace("_", " ");
+  let dateTime = config.date;
+  if (config.time) {
+    token.attrs.push(["data-time", state.md.utils.escapeHtml(config.time)]);
+    dateTime = `${dateTime} ${config.time}`;
+  }
 
-      if (dateTime.match(/TZ/)) {
-        return dateTime.replace("TZ", formattedTimezone);
-      } else {
-        return `${dateTime} (${formattedTimezone})`;
-      }
+  if (!moment(dateTime).isValid()) {
+    closeBuffer(buffer, state, moment.invalid().format());
+    return;
+  }
+
+  token.attrs.push(["class", "discourse-local-date"]);
+
+  if (config.format) {
+    token.attrs.push(["data-format", state.md.utils.escapeHtml(config.format)]);
+  }
+
+  if (config.calendar) {
+    token.attrs.push([
+      "data-calendar",
+      state.md.utils.escapeHtml(config.calendar)
+    ]);
+  }
+
+  if (
+    config.displayedTimezone &&
+    moment.tz.names().includes(config.displayedTimezone)
+  ) {
+    token.attrs.push([
+      "data-displayed-timezone",
+      state.md.utils.escapeHtml(config.displayedTimezone)
+    ]);
+  }
+
+  if (config.timezones) {
+    const timezones = config.timezones.split("|").filter(timezone => {
+      return moment.tz.names().includes(timezone);
     });
 
-  token.attrs.push(["data-email-preview", previews[0]]);
+    token.attrs.push([
+      "data-timezones",
+      state.md.utils.escapeHtml(timezones.join("|"))
+    ]);
+  }
+
+  if (config.timezone && moment.tz.names().includes(config.timezone)) {
+    token.attrs.push([
+      "data-timezone",
+      state.md.utils.escapeHtml(config.timezone)
+    ]);
+    dateTime = moment.tz(dateTime, config.timezone);
+  } else {
+    dateTime = moment.utc(dateTime);
+  }
+
+  if (config.recurring) {
+    token.attrs.push([
+      "data-recurring",
+      state.md.utils.escapeHtml(config.recurring)
+    ]);
+  }
+
+  buffer.push(token);
+
+  const formattedDateTime = dateTime
+    .tz("Etc/UTC")
+    .format(
+      state.md.options.discourse.datesEmailFormat || moment.defaultFormat
+    );
+  token.attrs.push(["data-email-preview", `${formattedDateTime} UTC`]);
+
+  closeBuffer(buffer, state, dateTime.utc().format(config.format));
+}
+
+function closeBuffer(buffer, state, text) {
+  let token;
 
   token = new state.Token("text", "", 0);
-  token.content = previews.join(", ");
+  token.content = text;
   buffer.push(token);
 
   token = new state.Token("span_close", "span", -1);
+
   buffer.push(token);
 }
 
@@ -67,10 +130,12 @@ export function setup(helper) {
   helper.whiteList([
     "span.discourse-local-date",
     "span[data-*]",
-    "span[title]"
+    "span[aria-label]"
   ]);
 
   helper.registerOptions((opts, siteSettings) => {
+    opts.datesEmailFormat = siteSettings.discourse_local_dates_email_format;
+
     opts.features[
       "discourse-local-dates"
     ] = !!siteSettings.discourse_local_dates_enabled;
@@ -78,7 +143,7 @@ export function setup(helper) {
 
   helper.registerPlugin(md => {
     const rule = {
-      matcher: /\[date(.+?)\]/,
+      matcher: /\[date(=.+?)\]/,
       onMatch: addLocalDate
     };
 

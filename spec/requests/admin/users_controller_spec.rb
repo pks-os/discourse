@@ -1,4 +1,7 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
+require 'discourse_ip_info'
 
 RSpec.describe Admin::UsersController do
   let(:admin) { Fabricate(:admin) }
@@ -55,7 +58,10 @@ RSpec.describe Admin::UsersController do
   end
 
   describe '#approve' do
-    let(:evil_trout) { Fabricate(:evil_trout, approved: false) }
+    let(:evil_trout) { Fabricate(:evil_trout) }
+    before do
+      SiteSetting.must_approve_users = true
+    end
 
     it "raises an error when the user doesn't have permission" do
       sign_in(user)
@@ -65,16 +71,32 @@ RSpec.describe Admin::UsersController do
       expect(evil_trout.approved).to eq(false)
     end
 
+    it "will create a reviewable if one does not exist" do
+      evil_trout.update!(active: true)
+      expect(ReviewableUser.find_by(target: evil_trout)).to be_blank
+      put "/admin/users/#{evil_trout.id}/approve.json"
+      expect(response.code).to eq("200")
+      expect(ReviewableUser.find_by(target: evil_trout)).to be_present
+      expect(evil_trout.reload).to be_approved
+    end
+
     it 'calls approve' do
+      Jobs.run_immediately!
+      evil_trout.activate
       put "/admin/users/#{evil_trout.id}/approve.json"
       expect(response.status).to eq(200)
       evil_trout.reload
       expect(evil_trout.approved).to eq(true)
+      expect(UserHistory.where(action: UserHistory.actions[:approve_user], target_user_id: evil_trout.id).count).to eq(1)
     end
   end
 
   describe '#approve_bulk' do
-    let(:evil_trout) { Fabricate(:evil_trout, approved: false) }
+    before do
+      SiteSetting.must_approve_users = true
+    end
+
+    let(:evil_trout) { Fabricate(:evil_trout) }
 
     it "does nothing without uesrs" do
       put "/admin/users/approve-bulk.json"
@@ -92,6 +114,8 @@ RSpec.describe Admin::UsersController do
     end
 
     it "approves the user when permitted" do
+      Jobs.run_immediately!
+      evil_trout.activate
       put "/admin/users/approve-bulk.json", params: { users: [evil_trout.id] }
       expect(response.status).to eq(200)
       evil_trout.reload
@@ -240,9 +264,9 @@ RSpec.describe Admin::UsersController do
       expect(AdminConfirmation.exists_for?(another_user.id)).to eq(false)
     end
 
-    it "returns a 403 if the username doesn't exist" do
+    it "returns a 404 if the username doesn't exist" do
       put "/admin/users/123123/grant_admin.json"
-      expect(response.status).to eq(403)
+      expect(response.status).to eq(404)
     end
 
     it 'updates the admin flag' do
@@ -299,9 +323,9 @@ RSpec.describe Admin::UsersController do
       expect(response.status).to eq(404)
     end
 
-    it "returns a 422 if the username doesn't exist" do
+    it "returns a 404 if the username doesn't exist" do
       put "/admin/users/123123/trust_level.json"
-      expect(response.status).to eq(422)
+      expect(response.status).to eq(404)
     end
 
     it "upgrades the user's trust level" do
@@ -324,7 +348,7 @@ RSpec.describe Admin::UsersController do
       stat.posts_read_count = SiteSetting.tl1_requires_read_posts + 1
       stat.time_read = SiteSetting.tl1_requires_time_spent_mins * 60
       stat.save!
-      another_user.update_attributes(trust_level: TrustLevel[1])
+      another_user.update(trust_level: TrustLevel[1])
 
       put "/admin/users/#{another_user.id}/trust_level.json", params: {
         level: TrustLevel[0]
@@ -346,9 +370,9 @@ RSpec.describe Admin::UsersController do
       expect(response.status).to eq(404)
     end
 
-    it "returns a 403 if the username doesn't exist" do
+    it "returns a 404 if the username doesn't exist" do
       put "/admin/users/123123/grant_moderation.json"
-      expect(response.status).to eq(403)
+      expect(response.status).to eq(404)
     end
 
     it 'updates the moderator flag' do
@@ -381,6 +405,7 @@ RSpec.describe Admin::UsersController do
   describe '#primary_group' do
     let(:group) { Fabricate(:group) }
     let(:another_user) { Fabricate(:coding_horror) }
+    let(:another_group) { Fabricate(:group, title: 'New') }
 
     it "raises an error when the user doesn't have permission" do
       sign_in(user)
@@ -392,7 +417,7 @@ RSpec.describe Admin::UsersController do
 
     it "returns a 404 if the user doesn't exist" do
       put "/admin/users/123123/primary_group.json"
-      expect(response.status).to eq(403)
+      expect(response.status).to eq(404)
     end
 
     it "changes the user's primary group" do
@@ -426,6 +451,41 @@ RSpec.describe Admin::UsersController do
       expect(response.status).to eq(200)
       another_user.reload
       expect(another_user.primary_group_id).to eq(nil)
+    end
+
+    it "updates user's title when it matches the previous primary group title" do
+      group.update_columns(primary_group: true, title: 'Previous')
+      group.add(another_user)
+      another_group.add(another_user)
+
+      expect(another_user.reload.title).to eq('Previous')
+
+      put "/admin/users/#{another_user.id}/primary_group.json", params: {
+        primary_group_id: another_group.id
+      }
+
+      another_user.reload
+      expect(response.status).to eq(200)
+      expect(another_user.primary_group_id).to eq(another_group.id)
+      expect(another_user.title).to eq('New')
+    end
+
+    it "doesn't update user's title when it does not match the previous primary group title" do
+      another_user.update_columns(title: 'Different')
+      group.update_columns(primary_group: true, title: 'Previous')
+      another_group.add(another_user)
+      group.add(another_user)
+
+      expect(another_user.reload.title).to eq('Different')
+
+      put "/admin/users/#{another_user.id}/primary_group.json", params: {
+        primary_group_id: another_group.id
+      }
+
+      another_user.reload
+      expect(response.status).to eq(200)
+      expect(another_user.primary_group_id).to eq(another_group.id)
+      expect(another_user.title).to eq('Different')
     end
   end
 
@@ -517,9 +577,9 @@ RSpec.describe Admin::UsersController do
       expect(reg_user).not_to be_silenced
     end
 
-    it "returns a 403 if the user doesn't exist" do
+    it "returns a 404 if the user doesn't exist" do
       put "/admin/users/123123/silence.json"
-      expect(response.status).to eq(403)
+      expect(response.status).to eq(404)
     end
 
     it "punishes the user for spamming" do
@@ -589,7 +649,7 @@ RSpec.describe Admin::UsersController do
 
     it "returns a 403 if the user doesn't exist" do
       put "/admin/users/123123/unsilence.json"
-      expect(response.status).to eq(403)
+      expect(response.status).to eq(404)
     end
 
     it "unsilences the user" do
@@ -674,19 +734,24 @@ RSpec.describe Admin::UsersController do
   end
 
   describe '#ip_info' do
-    it "uses ipinfo.io webservice to retrieve the info" do
-      ip = "192.168.1.1"
-      ip_data = {
-        city: "Jeddah",
-        country: "SA",
-        ip: ip
-      }
-      url = "https://ipinfo.io/#{ip}/json"
+    it "retrieves IP info" do
+      ip = "81.2.69.142"
 
-      stub_request(:get, url).to_return(status: 200, body: ip_data.to_json)
+      DiscourseIpInfo.open_db(File.join(Rails.root, 'spec', 'fixtures', 'mmdb'))
+      Resolv::DNS.any_instance.stubs(:getname).with(ip).returns("ip-81-2-69-142.example.com")
+
       get "/admin/users/ip-info.json", params: { ip: ip }
       expect(response.status).to eq(200)
-      expect(JSON.parse(response.body).symbolize_keys).to eq(ip_data)
+      expect(JSON.parse(response.body).symbolize_keys).to eq(
+        city: "London",
+        country: "United Kingdom",
+        country_code: "GB",
+        hostname: "ip-81-2-69-142.example.com",
+        location: "London, England, United Kingdom",
+        region: "England",
+        latitude: 51.5142,
+        longitude: -0.0931,
+      )
     end
   end
 
@@ -731,6 +796,8 @@ RSpec.describe Admin::UsersController do
       expect(u.name).to eq("Bill")
       expect(u.username).to eq("bill22")
       expect(u.admin).to eq(true)
+      expect(u.active).to eq(true)
+      expect(u.approved).to eq(true)
     end
 
     it "doesn't send the email with send_email falsey" do
@@ -803,6 +870,19 @@ RSpec.describe Admin::UsersController do
       post "/admin/users/sync_sso.json", params: Rack::Utils.parse_query(sso.payload)
       expect(response.status).to eq(403)
       expect(JSON.parse(response.body)["message"]).to include("Primary email can't be blank")
+    end
+
+    it 'should return the right message if the signature is invalid' do
+      sso.name = "Dr. Claw"
+      sso.username = "dr_claw"
+      sso.email = "dr@claw.com"
+      sso.external_id = "2"
+
+      correct_payload = Rack::Utils.parse_query(sso.payload)
+      post "/admin/users/sync_sso.json", params: correct_payload.merge(sig: "someincorrectsignature")
+      expect(response.status).to eq(422)
+      expect(JSON.parse(response.body)["message"]).to include(I18n.t('sso.login_error'))
+      expect(JSON.parse(response.body)["message"]).not_to include(correct_payload["sig"])
     end
   end
 
@@ -885,6 +965,38 @@ RSpec.describe Admin::UsersController do
       expect(find_logs(:removed_unsilence_user)).to be_present
     end
 
+  end
+
+  describe "#delete_posts_batch" do
+    describe 'when user is is invalid' do
+      it 'should return the right response' do
+        put "/admin/users/nothing/delete_posts_batch.json"
+
+        expect(response.status).to eq(404)
+      end
+    end
+
+    context "when there are user posts" do
+      before do
+        post = Fabricate(:post, user: user)
+        Fabricate(:post, topic: post.topic, user: user)
+        Fabricate(:post, user: user)
+      end
+
+      it 'returns how many posts were deleted' do
+        put "/admin/users/#{user.id}/delete_posts_batch.json"
+        expect(response.status).to eq(200)
+        expect(JSON.parse(response.body)["posts_deleted"]).to eq(3)
+      end
+    end
+
+    context "when there are no posts left to be deleted" do
+      it "returns correct json" do
+        put "/admin/users/#{user.id}/delete_posts_batch.json"
+        expect(response.status).to eq(200)
+        expect(JSON.parse(response.body)["posts_deleted"]).to eq(0)
+      end
+    end
   end
 
 end

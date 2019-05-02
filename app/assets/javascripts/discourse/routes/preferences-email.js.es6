@@ -12,12 +12,13 @@ export default RestrictedUserRoute.extend({
   },
 
   setupController: function(controller, model) {
+    controller.reset();
     controller.setProperties({ model: model, newEmail: model.get("email") });
   },
 
   // A bit odd, but if we leave to /preferences we need to re-render that outlet
   deactivate: function() {
-    this._super();
+    this._super(...arguments);
     this.render("preferences", { into: "user", controller: "preferences" });
   }
 });

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 RSpec.describe Jobs::FixOutOfSyncUserUploadedAvatar do
@@ -16,8 +18,9 @@ RSpec.describe Jobs::FixOutOfSyncUserUploadedAvatar do
     custom_upload2 = Fabricate(:upload, user: user_out_of_sync)
     gravatar_upload2 = Fabricate(:upload, user: user_out_of_sync)
     prev_gravatar_upload = Fabricate(:upload, user: user_out_of_sync)
-    user_out_of_sync.update!(uploaded_avatar: prev_gravatar_upload)
+
     prev_gravatar_upload.destroy!
+    user_out_of_sync.update!(uploaded_avatar_id: prev_gravatar_upload.id)
 
     user_out_of_sync.user_avatar.update!(
       custom_upload: custom_upload2,
@@ -38,5 +41,6 @@ RSpec.describe Jobs::FixOutOfSyncUserUploadedAvatar do
 
     expect(user_without_uploaded_avatar.reload.uploaded_avatar)
       .to eq(nil)
+
   end
 end

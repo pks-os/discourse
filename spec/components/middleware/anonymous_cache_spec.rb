@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rails_helper"
 require_dependency "middleware/anonymous_cache"
 
@@ -32,7 +34,7 @@ describe Middleware::AnonymousCache::Helper do
 
   context "per theme cache" do
     it "handles theme keys" do
-      theme = Theme.create(name: "test", user_id: -1, user_selectable: true)
+      theme = Fabricate(:theme, user_selectable: true)
 
       with_bad_theme_key = new_helper("HTTP_COOKIE" => "theme_ids=abc").cache_key
       with_no_theme_key = new_helper().cache_key
@@ -167,7 +169,7 @@ describe Middleware::AnonymousCache::Helper do
         "PATH_INFO" => path,
         "REQUEST_PATH" => path
       }.merge(options[:headers]))
-      @status = middleware.call(@env).first
+      @status, @response_header, @response = middleware.call(@env)
     end
 
     it "applies whitelisted_crawler_user_agents correctly" do
@@ -184,8 +186,19 @@ describe Middleware::AnonymousCache::Helper do
       }
 
       expect(@status).to eq(403)
+      expect(@response).to be_an(Array)
 
       get '/', headers: non_crawler
+      expect(@status).to eq(200)
+    end
+
+    it "doesn't block api requests" do
+      SiteSetting.whitelisted_crawler_user_agents = 'Googlebot'
+      api_key = Fabricate(:api_key)
+
+      get "/latest?api_key=#{api_key.key}&api_username=system", headers: {
+        "QUERY_STRING" => "api_key=#{api_key.key}&api_username=system"
+      }
       expect(@status).to eq(200)
     end
 

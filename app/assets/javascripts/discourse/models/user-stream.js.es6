@@ -3,6 +3,7 @@ import { url } from "discourse/lib/computed";
 import RestModel from "discourse/models/rest";
 import UserAction from "discourse/models/user-action";
 import { emojiUnescape } from "discourse/lib/text";
+import computed from "ember-addons/ember-computed-decorators";
 
 export default RestModel.extend({
   loaded: false,
@@ -11,8 +12,8 @@ export default RestModel.extend({
     this.setProperties({ itemsLoaded: 0, content: [] });
   }.on("init"),
 
-  filterParam: function() {
-    const filter = this.get("filter");
+  @computed("filter")
+  filterParam(filter) {
     if (filter === Discourse.UserAction.TYPES.replies) {
       return [UserAction.TYPES.replies, UserAction.TYPES.quotes].join(",");
     }
@@ -22,7 +23,7 @@ export default RestModel.extend({
     }
 
     return filter;
-  }.property("filter"),
+  },
 
   baseUrl: url(
     "itemsLoaded",
@@ -30,20 +31,25 @@ export default RestModel.extend({
     "/user_actions.json?offset=%@&username=%@"
   ),
 
-  filterBy(filter, noContentHelpKey) {
-    this.setProperties({
-      filter,
-      itemsLoaded: 0,
-      content: [],
-      noContentHelpKey: noContentHelpKey,
-      lastLoadedUrl: null
-    });
+  filterBy(opts) {
+    this.setProperties(
+      Object.assign(
+        {
+          itemsLoaded: 0,
+          content: [],
+          lastLoadedUrl: null
+        },
+        opts
+      )
+    );
+
     return this.findItems();
   },
 
-  noContent: function() {
+  @computed("loaded", "content.[]")
+  noContent() {
     return this.get("loaded") && this.get("content").length === 0;
-  }.property("loaded", "content.@each"),
+  },
 
   remove(userAction) {
     // 1) remove the user action from the child groups
@@ -77,6 +83,10 @@ export default RestModel.extend({
       findUrl += "&no_results_help_key=" + this.get("noContentHelpKey");
     }
 
+    if (this.get("actingUsername")) {
+      findUrl += `&acting_username=${this.get("actingUsername")}`;
+    }
+
     // Don't load the same stream twice. We're probably at the end.
     const lastLoadedUrl = this.get("lastLoadedUrl");
     if (lastLoadedUrl === findUrl) {
@@ -93,7 +103,7 @@ export default RestModel.extend({
           self.set("noContentHelp", result.no_results_help);
         }
         if (result && result.user_actions) {
-          const copy = Em.A();
+          const copy = Ember.A();
           result.user_actions.forEach(function(action) {
             action.title = emojiUnescape(
               Handlebars.Utils.escapeExpression(action.title)

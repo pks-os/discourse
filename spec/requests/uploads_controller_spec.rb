@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe UploadsController do
@@ -111,6 +113,14 @@ describe UploadsController do
         expect(response.status).to eq(422)
       end
 
+      it 'always allows admins to upload avatars' do
+        sign_in(Fabricate(:admin))
+        SiteSetting.allow_uploaded_avatars = false
+
+        post "/uploads.json", params: { file: logo, type: "avatar" }
+        expect(response.status).to eq(200)
+      end
+
       it 'allows staff to upload any file in PM' do
         SiteSetting.authorized_extensions = "jpg"
         SiteSetting.allow_staff_to_upload_any_file_in_pm = true
@@ -124,7 +134,26 @@ describe UploadsController do
 
         expect(response.status).to eq(200)
         id = JSON.parse(response.body)["id"]
-        expect(id).to be_present
+        expect(Upload.last.id).to eq(id)
+      end
+
+      it 'allows staff to upload supported images for site settings' do
+        SiteSetting.authorized_extensions = ''
+        user.update!(admin: true)
+
+        post "/uploads.json", params: {
+          file: logo,
+          type: "site_setting",
+          for_site_setting: "true",
+        }
+
+        expect(response.status).to eq(200)
+        id = JSON.parse(response.body)["id"]
+
+        upload = Upload.last
+
+        expect(upload.id).to eq(id)
+        expect(upload.original_filename).to eq('logo.png')
       end
 
       it 'respects `authorized_extensions_for_staff` setting when staff upload file' do
@@ -171,8 +200,8 @@ describe UploadsController do
     let(:sha) { Digest::SHA1.hexdigest("discourse") }
     let(:user) { Fabricate(:user) }
 
-    def upload_file(file)
-      fake_logo = Rack::Test::UploadedFile.new(file_from_fixtures(file))
+    def upload_file(file, folder = "images")
+      fake_logo = Rack::Test::UploadedFile.new(file_from_fixtures(file, folder))
       SiteSetting.authorized_extensions = "*"
       sign_in(user)
 
@@ -199,6 +228,14 @@ describe UploadsController do
       expect(response.status).to eq(404)
     end
 
+    it "returns 404 when the path is nil" do
+      upload = upload_file("logo.png")
+      upload.update_column(:url, "invalid-url")
+
+      get "/uploads/#{site}/#{upload.sha1}.#{upload.extension}"
+      expect(response.status).to eq(404)
+    end
+
     it 'uses send_file' do
       upload = upload_file("logo.png")
       get "/uploads/#{site}/#{upload.sha1}.#{upload.extension}"
@@ -206,22 +243,32 @@ describe UploadsController do
       expect(response.headers["Content-Disposition"]).to eq("attachment; filename=\"logo.png\"")
     end
 
-    it "handles file without extension" do
+    it "handles image without extension" do
       SiteSetting.authorized_extensions = "*"
       upload = upload_file("image_no_extension")
 
       get "/uploads/#{site}/#{upload.sha1}.json"
       expect(response.status).to eq(200)
-      expect(response.headers["Content-Disposition"]).to eq("attachment; filename=\"image_no_extension\"")
+      expect(response.headers["Content-Disposition"]).to eq("attachment; filename=\"image_no_extension.png\"")
+    end
+
+    it "handles file without extension" do
+      SiteSetting.authorized_extensions = "*"
+      upload = upload_file("not_an_image")
+
+      get "/uploads/#{site}/#{upload.sha1}.json"
+      expect(response.status).to eq(200)
+      expect(response.headers["Content-Disposition"]).to eq("attachment; filename=\"not_an_image\"")
     end
 
     context "prevent anons from downloading files" do
       it "returns 404 when an anonymous user tries to download a file" do
-        upload = upload_file("logo.png")
+        skip("this only works when nginx/apache is asset server") if Discourse::Application.config.public_file_server.enabled
+        upload = upload_file("small.pdf", "pdf")
         delete "/session/#{user.username}.json" # upload a file, then sign out
 
         SiteSetting.prevent_anons_from_downloading_files = true
-        get "/uploads/#{site}/#{upload.sha1}.#{upload.extension}"
+        get upload.url
         expect(response.status).to eq(404)
       end
     end
@@ -237,6 +284,53 @@ describe UploadsController do
 
       result = JSON.parse(response.body)
       expect(result[0]["url"]).to eq(upload.url)
+    end
+  end
+
+  describe '#metadata' do
+    let(:upload) { Fabricate(:upload) }
+
+    describe 'when url is missing' do
+      it 'should return the right response' do
+        post "/uploads/lookup-metadata.json"
+
+        expect(response.status).to eq(403)
+      end
+    end
+
+    describe 'when not signed in' do
+      it 'should return the right response' do
+        post "/uploads/lookup-metadata.json", params: { url: upload.url }
+
+        expect(response.status).to eq(403)
+      end
+    end
+
+    describe 'when signed in' do
+      before do
+        sign_in(Fabricate(:user))
+      end
+
+      describe 'when url is invalid' do
+        it 'should return the right response' do
+          post "/uploads/lookup-metadata.json", params: { url: 'abc' }
+
+          expect(response.status).to eq(404)
+        end
+      end
+
+      it "should return the right response" do
+        post "/uploads/lookup-metadata.json", params: { url: upload.url }
+
+        expect(response.status).to eq(200)
+
+        result = JSON.parse(response.body)
+
+        expect(result["original_filename"]).to eq(upload.original_filename)
+        expect(result["width"]).to eq(upload.width)
+        expect(result["height"]).to eq(upload.height)
+        expect(result["human_filesize"]).to eq(upload.human_filesize)
+      end
     end
   end
 end

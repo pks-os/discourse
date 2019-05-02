@@ -1,4 +1,6 @@
 import { acceptance } from "helpers/qunit-helpers";
+import User from "discourse/models/user";
+
 acceptance("User Preferences", {
   loggedIn: true,
   pretend(server, helper) {
@@ -24,6 +26,23 @@ acceptance("User Preferences", {
         success: true
       });
     });
+
+    server.put("/u/eviltrout/preferences/email", () => {
+      return helper.response({
+        success: true
+      });
+    });
+
+    server.post("/user_avatar/eviltrout/refresh_gravatar.json", () => {
+      return helper.response({
+        gravatar_upload_id: 6543,
+        gravatar_avatar_template: "something"
+      });
+    });
+
+    server.get("/u/eviltrout/activity.json", () => {
+      return helper.response({});
+    });
   }
 });
 
@@ -38,12 +57,11 @@ QUnit.test("update some fields", async assert => {
   );
   assert.ok(exists(".user-preferences"), "it shows the preferences");
 
-  const savePreferences = () => {
-    click(".save-user");
+  const savePreferences = async () => {
     assert.ok(!exists(".saved-user"), "it hasn't been saved yet");
-    andThen(() => {
-      assert.ok(exists(".saved-user"), "it displays the saved message");
-    });
+    await click(".save-user");
+    assert.ok(exists(".saved-user"), "it displays the saved message");
+    find(".saved-user").remove();
   };
 
   fillIn(".pref-name input[type=text]", "Jon Snow");
@@ -65,7 +83,7 @@ QUnit.test("update some fields", async assert => {
   await savePreferences();
 
   click(".preferences-nav .nav-categories a");
-  fillIn(".category-controls .category-selector", "faq");
+  fillIn(".tracking-controls .category-selector", "faq");
   await savePreferences();
 
   assert.ok(
@@ -73,15 +91,59 @@ QUnit.test("update some fields", async assert => {
     "tags tab isn't there when tags are disabled"
   );
 
-  // Error: Unhandled request in test environment: /themes/assets/10d71596-7e4e-4dc0-b368-faa3b6f1ce6d?_=1493833562388 (GET)
-  // click(".preferences-nav .nav-interface a");
-  // click('.control-group.other input[type=checkbox]:first');
-  // savePreferences();
+  click(".preferences-nav .nav-interface a");
+  click(".control-group.other input[type=checkbox]:first");
+  savePreferences();
 
   assert.ok(
     !exists(".preferences-nav .nav-apps a"),
     "apps tab isn't there when you have no authorized apps"
   );
+});
+
+QUnit.test("font size change", async assert => {
+  $.removeCookie("text_size");
+
+  const savePreferences = async () => {
+    assert.ok(!exists(".saved-user"), "it hasn't been saved yet");
+    await click(".save-user");
+    assert.ok(exists(".saved-user"), "it displays the saved message");
+    find(".saved-user").remove();
+  };
+
+  await visit("/u/eviltrout/preferences/interface");
+
+  // Live changes without reload
+  await expandSelectKit(".text-size .combobox");
+  await selectKitSelectRowByValue("larger", ".text-size .combobox");
+  assert.ok(document.documentElement.classList.contains("text-size-larger"));
+
+  await expandSelectKit(".text-size .combobox");
+  await selectKitSelectRowByValue("largest", ".text-size .combobox");
+  assert.ok(document.documentElement.classList.contains("text-size-largest"));
+
+  assert.equal($.cookie("text_size"), null, "cookie is not set");
+
+  // Click save (by default this sets for all browsers, no cookie)
+  await savePreferences();
+
+  assert.equal($.cookie("text_size"), null, "cookie is not set");
+
+  await expandSelectKit(".text-size .combobox");
+  await selectKitSelectRowByValue("larger", ".text-size .combobox");
+  await click(".text-size input[type=checkbox]");
+
+  await savePreferences();
+
+  assert.equal($.cookie("text_size"), "larger|1", "cookie is set");
+  await click(".text-size input[type=checkbox]");
+  await expandSelectKit(".text-size .combobox");
+  await selectKitSelectRowByValue("largest", ".text-size .combobox");
+
+  await savePreferences();
+  assert.equal($.cookie("text_size"), null, "cookie is removed");
+
+  $.removeCookie("text_size");
 });
 
 QUnit.test("username", async assert => {
@@ -108,6 +170,20 @@ QUnit.test("email", async assert => {
     I18n.t("user.email.invalid"),
     "it should display invalid email tip"
   );
+});
+
+QUnit.test("email field always shows up", async assert => {
+  await visit("/u/eviltrout/preferences/email");
+
+  assert.ok(exists("#change-email"), "it has the input element");
+
+  await fillIn("#change-email", "eviltrout@discourse.org");
+  await click(".user-preferences button.btn-primary");
+
+  await visit("/u/eviltrout/preferences");
+  await visit("/u/eviltrout/preferences/email");
+
+  assert.ok(exists("#change-email"), "it has the input element");
 });
 
 QUnit.test("connected accounts", async assert => {
@@ -172,6 +248,14 @@ QUnit.test("default avatar selector", async assert => {
 
   await click(".pref-avatar .btn");
   assert.ok(exists(".avatar-choice", "opens the avatar selection modal"));
+
+  await click(".avatar-selector-refresh-gravatar");
+
+  assert.equal(
+    User.currentProp("gravatar_avatar_upload_id"),
+    6543,
+    "it should set the gravatar_avatar_upload_id property"
+  );
 });
 
 acceptance("Avatar selector when selectable avatars is enabled", {
@@ -210,4 +294,47 @@ QUnit.test("visit my preferences", async assert => {
     "defaults to account tab"
   );
   assert.ok(exists(".user-preferences"), "it shows the preferences");
+});
+
+QUnit.test("recently connected devices", async assert => {
+  await visit("/u/eviltrout/preferences");
+
+  assert.equal(
+    find(".auth-tokens > .auth-token:first .auth-token-device")
+      .text()
+      .trim(),
+    "Linux Computer",
+    "it should display active token first"
+  );
+
+  assert.equal(
+    find(".pref-auth-tokens > a:first")
+      .text()
+      .trim(),
+    I18n.t("user.auth_tokens.show_all", { count: 3 }),
+    "it should display two tokens"
+  );
+  assert.ok(
+    find(".pref-auth-tokens .auth-token").length === 2,
+    "it should display two tokens"
+  );
+
+  await click(".pref-auth-tokens > a:first");
+
+  assert.ok(
+    find(".pref-auth-tokens .auth-token").length === 3,
+    "it should display three tokens"
+  );
+
+  await click(".auth-token-dropdown:first button");
+  await click("li[data-value='notYou']");
+
+  assert.ok(find(".d-modal:visible").length === 1, "modal should appear");
+
+  await click(".modal-footer .btn-primary");
+
+  assert.ok(
+    find(".pref-password.highlighted").length === 1,
+    "it should highlight password preferences"
+  );
 });

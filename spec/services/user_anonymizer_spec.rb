@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rails_helper"
 
 describe UserAnonymizer do
@@ -33,22 +35,36 @@ describe UserAnonymizer do
       expect(user.reload.username).to match(/^anon\d{3,}$/)
     end
 
-    it "changes email address" do
+    it "changes the primary email address" do
       make_anonymous
       expect(user.reload.email).to eq("#{user.username}@anonymized.invalid")
     end
 
+    it "changes the primary email address when there is an email domain whitelist" do
+      SiteSetting.email_domains_whitelist = 'example.net|wayne.com|discourse.org'
+
+      make_anonymous
+      expect(user.reload.email).to eq("#{user.username}@anonymized.invalid")
+    end
+
+    it "deletes secondary email addresses" do
+      Fabricate(:secondary_email, user: user, email: "secondary_email@example.com")
+
+      make_anonymous
+      expect(user.reload.secondary_emails).to be_blank
+    end
+
     it "turns off all notifications" do
       user.user_option.update_columns(
-        email_always: true
+        email_level: UserOption.email_level_types[:always],
+        email_messages_level: UserOption.email_level_types[:always]
       )
 
       make_anonymous
       user.reload
       expect(user.user_option.email_digests).to eq(false)
-      expect(user.user_option.email_private_messages).to eq(false)
-      expect(user.user_option.email_direct).to eq(false)
-      expect(user.user_option.email_always).to eq(false)
+      expect(user.user_option.email_level).to eq(UserOption.email_level_types[:never])
+      expect(user.user_option.email_messages_level).to eq(UserOption.email_level_types[:never])
       expect(user.user_option.mailing_list_mode).to eq(false)
     end
 
@@ -58,16 +74,18 @@ describe UserAnonymizer do
       end
 
       it "resets profile to default values" do
-        user.update_attributes(name: "Bibi", date_of_birth: 19.years.ago, title: "Super Star")
+        user.update(name: "Bibi", date_of_birth: 19.years.ago, title: "Super Star")
 
         profile = user.reload.user_profile
-        profile.update_attributes(location: "Moose Jaw",
-                                  website: "www.bim.com",
-                                  bio_raw: "I'm Bibi from Moosejaw. I sing and dance.",
-                                  bio_cooked: "I'm Bibi from Moosejaw. I sing and dance.",
-                                  profile_background: "http://example.com/bg.jpg",
-                                  bio_cooked_version: 2,
-                                  card_background: "http://example.com/cb.jpg")
+        profile.update(
+          location: "Moose Jaw",
+          website: "www.bim.com",
+          bio_raw: "I'm Bibi from Moosejaw. I sing and dance.",
+          bio_cooked: "I'm Bibi from Moosejaw. I sing and dance.",
+          profile_background: "http://example.com/bg.jpg",
+          bio_cooked_version: 2,
+          card_background: "http://example.com/cb.jpg"
+        )
 
         prev_username = user.username
 
@@ -100,7 +118,7 @@ describe UserAnonymizer do
       it "changes name to anonymized username" do
         prev_username = user.username
 
-        user.update_attributes(name: "Bibi", date_of_birth: 19.years.ago, title: "Super Star")
+        user.update(name: "Bibi", date_of_birth: 19.years.ago, title: "Super Star")
 
         make_anonymous
         user.reload
@@ -115,14 +133,14 @@ describe UserAnonymizer do
       user.user_avatar = UserAvatar.new(user_id: user.id, custom_upload_id: upload.id)
       user.uploaded_avatar_id = upload.id # chosen in user preferences
       user.save!
-      expect { make_anonymous }.to change { Upload.count }.by(-1)
+      make_anonymous
       user.reload
       expect(user.user_avatar).to eq(nil)
       expect(user.uploaded_avatar_id).to eq(nil)
     end
 
     it "updates the avatar in posts" do
-      SiteSetting.queue_jobs = false
+      Jobs.run_immediately!
       upload = Fabricate(:upload, user: user)
       user.user_avatar = UserAvatar.new(user_id: user.id, custom_upload_id: upload.id)
       user.uploaded_avatar_id = upload.id # chosen in user preferences
@@ -176,20 +194,15 @@ describe UserAnonymizer do
     end
 
     it "removes external auth assocations" do
-      user.twitter_user_info = TwitterUserInfo.create(user_id: user.id, screen_name: "example", twitter_user_id: "examplel123123")
-      user.google_user_info = GoogleUserInfo.create(user_id: user.id, google_user_id: "google@gmail.com")
       user.github_user_info = GithubUserInfo.create(user_id: user.id, screen_name: "example", github_user_id: "examplel123123")
-      user.facebook_user_info = FacebookUserInfo.create(user_id: user.id, facebook_user_id: "example")
+      user.user_associated_accounts = [UserAssociatedAccount.create(user_id: user.id, provider_uid: "example", provider_name: "facebook")]
       user.single_sign_on_record = SingleSignOnRecord.create(user_id: user.id, external_id: "example", last_payload: "looks good")
       user.oauth2_user_infos = [Oauth2UserInfo.create(user_id: user.id, uid: "example", provider: "example")]
-      user.instagram_user_info = InstagramUserInfo.create(user_id: user.id, screen_name: "example", instagram_user_id: "examplel123123")
       UserOpenId.create(user_id: user.id, email: user.email, url: "http://example.com/openid", active: true)
       make_anonymous
       user.reload
-      expect(user.twitter_user_info).to eq(nil)
-      expect(user.google_user_info).to eq(nil)
       expect(user.github_user_info).to eq(nil)
-      expect(user.facebook_user_info).to eq(nil)
+      expect(user.user_associated_accounts).to be_empty
       expect(user.single_sign_on_record).to eq(nil)
       expect(user.oauth2_user_infos).to be_empty
       expect(user.instagram_user_info).to eq(nil)
@@ -205,7 +218,7 @@ describe UserAnonymizer do
 
     context "executes job" do
       before do
-        SiteSetting.queue_jobs = false
+        Jobs.run_immediately!
       end
 
       it "removes invites" do
@@ -256,6 +269,21 @@ describe UserAnonymizer do
         UserProfileView.add(user.id, '127.0.0.1', another_user.id, Time.now, true)
         expect { make_anonymous }.to_not change { UserProfileView.count }
       end
+
+      it "removes user field values" do
+        field1 = Fabricate(:user_field)
+        field2 = Fabricate(:user_field)
+
+        user.custom_fields = {
+          "some_field": "123",
+          "user_field_#{field1.id}": "foo",
+          "user_field_#{field2.id}": "bar",
+          "another_field": "456"
+        }
+
+        expect { make_anonymous }.to change { user.custom_fields }
+        expect(user.reload.custom_fields).to eq("some_field" => "123", "another_field" => "456")
+      end
     end
   end
 
@@ -278,7 +306,7 @@ describe UserAnonymizer do
     end
 
     it "exhaustively replaces all user ips" do
-      SiteSetting.queue_jobs = false
+      Jobs.run_immediately!
       link = IncomingLink.create!(current_user_id: user.id, ip_address: old_ip, post_id: post.id)
 
       screened_email = ScreenedEmail.create!(email: user.email, ip_address: old_ip)

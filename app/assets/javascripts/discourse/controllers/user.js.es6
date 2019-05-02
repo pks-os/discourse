@@ -16,9 +16,9 @@ export default Ember.Controller.extend(CanCheckEmails, {
     return currentUser && username === currentUser.get("username");
   },
 
-  @computed("viewingSelf")
-  canExpandProfile(viewingSelf) {
-    return viewingSelf;
+  @computed("viewingSelf", "model.profile_hidden")
+  canExpandProfile(viewingSelf, profileHidden) {
+    return !profileHidden && viewingSelf;
   },
 
   @computed("model.profileBackground")
@@ -26,11 +26,17 @@ export default Ember.Controller.extend(CanCheckEmails, {
     return !Ember.isEmpty(background.toString());
   },
 
-  @computed("indexStream", "viewingSelf", "forceExpand")
-  collapsedInfo(indexStream, viewingSelf, forceExpand) {
+  @computed("model.profile_hidden", "indexStream", "viewingSelf", "forceExpand")
+  collapsedInfo(profileHidden, indexStream, viewingSelf, forceExpand) {
+    if (profileHidden) {
+      return true;
+    }
     return (!indexStream || viewingSelf) && !forceExpand;
   },
-
+  canMuteOrIgnoreUser: Ember.computed.or(
+    "model.can_ignore_user",
+    "model.can_mute_user"
+  ),
   hasGivenFlags: Ember.computed.gt("model.number_of_flags_given", 0),
   hasFlaggedPosts: Ember.computed.gt("model.number_of_flagged_posts", 0),
   hasDeletedPosts: Ember.computed.gt("model.number_of_deleted_posts", 0),
@@ -50,7 +56,7 @@ export default Ember.Controller.extend(CanCheckEmails, {
     return !suspended || isStaff;
   },
 
-  linkWebsite: Em.computed.not("model.isBasic"),
+  linkWebsite: Ember.computed.not("model.isBasic"),
 
   @computed("model.trust_level")
   removeNoFollow(trustLevel) {
@@ -142,6 +148,11 @@ export default Ember.Controller.extend(CanCheckEmails, {
 
     adminDelete() {
       this.get("adminTools").deleteUser(this.get("model.id"));
+    },
+
+    updateNotificationLevel(level) {
+      const user = this.get("model");
+      return user.updateNotificationLevel(level);
     }
   }
 });

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe UsersEmailController do
@@ -128,6 +130,12 @@ describe UsersEmailController do
       it 'raises an error without an email parameter' do
         put "/u/#{user.username}/preferences/email.json"
         expect(response.status).to eq(400)
+      end
+
+      it 'raises an error without an invalid email' do
+        put "/u/#{user.username}/preferences/email.json", params: { email: "sam@not-email.com'" }
+        expect(response.status).to eq(422)
+        expect(response.body).to include("email is invalid")
       end
 
       it "raises an error if you can't edit the user's email" do

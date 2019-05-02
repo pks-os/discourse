@@ -10,7 +10,6 @@
 //= require ./deprecated
 
 // Stuff we need to load first
-//= require ./discourse/helpers/parse-html
 //= require ./discourse/lib/to-markdown
 //= require ./discourse/lib/utilities
 //= require ./discourse/lib/page-visible
@@ -73,7 +72,6 @@
 //= require ./discourse/controllers/discovery-sortable
 //= require ./discourse/controllers/navigation/default
 //= require ./discourse/components/edit-category-panel
-//= require ./discourse/components/dropdown-button
 //= require ./discourse/lib/link-mentions
 //= require ./discourse/components/site-header
 //= require ./discourse/components/d-editor

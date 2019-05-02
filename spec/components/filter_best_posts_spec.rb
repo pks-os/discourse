@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 require 'filter_best_posts'
 require 'topic_view'
@@ -7,8 +9,6 @@ describe FilterBestPosts do
   let(:topic) { Fabricate(:topic) }
   let(:coding_horror) { Fabricate(:coding_horror) }
   let(:first_poster) { topic.user }
-
-  let(:topic_view) { TopicView.new(topic.id, coding_horror) }
 
   let!(:p1) { Fabricate(:post, topic: topic, user: first_poster, percent_rank: 1) }
   let!(:p2) { Fabricate(:post, topic: topic, user: coding_horror, percent_rank: 0.5) }
@@ -75,13 +75,13 @@ describe FilterBestPosts do
     end
 
     it "doesn't count likes from admins" do
-      PostAction.act(admin, p3, PostActionType.types[:like])
+      PostActionCreator.like(admin, p3)
       best = FilterBestPosts.new(topic, @filtered_posts, 99, only_moderator_liked: true)
       expect(best.posts.count).to eq(0)
     end
 
     it "should find the post liked by the moderator" do
-      PostAction.act(moderator, p2, PostActionType.types[:like])
+      PostActionCreator.like(moderator, p2)
       best = FilterBestPosts.new(topic, @filtered_posts, 99, only_moderator_liked: true)
       expect(best.posts.count).to eq(1)
     end

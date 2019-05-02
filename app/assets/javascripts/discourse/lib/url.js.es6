@@ -22,7 +22,8 @@ const SERVER_SIDE_ONLY = [
   /^\/wizard/,
   /\.rss$/,
   /\.json$/,
-  /^\/admin\/upgrade$/
+  /^\/admin\/upgrade$/,
+  /^\/logs($|\/)/
 ];
 
 export function rewritePath(path) {
@@ -49,6 +50,10 @@ export function clearRewrites() {
 
 export function userPath(subPath) {
   return Discourse.getURL(subPath ? `/u/${subPath}` : "/u");
+}
+
+export function groupPath(subPath) {
+  return Discourse.getURL(subPath ? `/g/${subPath}` : "/g");
 }
 
 let _jumpScheduled = false;
@@ -153,7 +158,12 @@ const DiscourseURL = Ember.Object.extend({
   },
 
   routeToTag(a) {
-    if (a && a.host !== document.location.host) {
+    // skip when we are provided nowhere to route to
+    if (!a || !a.href) {
+      return false;
+    }
+
+    if (a.host && a.host !== document.location.host) {
       document.location = a.href;
       return false;
     }
@@ -171,7 +181,7 @@ const DiscourseURL = Ember.Object.extend({
   routeTo(path, opts) {
     opts = opts || {};
 
-    if (Em.isEmpty(path)) {
+    if (Ember.isEmpty(path)) {
       return;
     }
 
@@ -182,13 +192,7 @@ const DiscourseURL = Ember.Object.extend({
     const pathname = path.replace(/(https?\:)?\/\/[^\/]+/, "");
     const baseUri = Discourse.BaseUri;
 
-    // If we have a baseUri and an absolute URL, make sure the baseUri
-    // is the same. Otherwise we could be switching forums.
-    if (
-      baseUri &&
-      path.indexOf("http") === 0 &&
-      pathname.indexOf(baseUri) !== 0
-    ) {
+    if (!DiscourseURL.isInternal(path)) {
       return redirectTo(path);
     }
 
@@ -200,11 +204,6 @@ const DiscourseURL = Ember.Object.extend({
 
     if (serverSide) {
       return;
-    }
-
-    // Protocol relative URLs
-    if (path.indexOf("//") === 0) {
-      return redirectTo(path);
     }
 
     // Scroll to the same page, different anchor
@@ -241,6 +240,10 @@ const DiscourseURL = Ember.Object.extend({
     }
 
     path = rewritePath(path);
+
+    if (typeof opts.afterRouteComplete === "function") {
+      Ember.run.schedule("afterRender", opts.afterRouteComplete);
+    }
 
     if (this.navigatedToPost(oldPath, path, opts)) {
       return;

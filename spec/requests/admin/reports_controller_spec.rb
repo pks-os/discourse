@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe Admin::ReportsController do
@@ -11,6 +13,41 @@ describe Admin::ReportsController do
 
     before do
       sign_in(admin)
+    end
+
+    describe '#bulk' do
+      context "valid params" do
+        it "renders the reports as JSON" do
+          Fabricate(:topic)
+          get "/admin/reports/bulk.json", params: {
+            reports: {
+              topics: { limit: 10 },
+              likes: { limit: 10 }
+            }
+          }
+
+          expect(response.status).to eq(200)
+          expect(JSON.parse(response.body)["reports"].count).to eq(2)
+        end
+      end
+
+      context "invalid params" do
+        context "inexisting report" do
+          it "returns not found reports" do
+            get "/admin/reports/bulk.json", params: {
+              reports: {
+                topics: { limit: 10 },
+                not_found: { limit: 10 }
+              }
+            }
+
+            expect(response.status).to eq(200)
+            expect(JSON.parse(response.body)["reports"].count).to eq(2)
+            expect(JSON.parse(response.body)["reports"][0]["type"]).to eq("topics")
+            expect(JSON.parse(response.body)["reports"][1]["type"]).to eq("not_found")
+          end
+        end
+      end
     end
 
     describe '#show' do

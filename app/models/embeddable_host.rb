@@ -3,6 +3,7 @@ require_dependency 'url_helper'
 class EmbeddableHost < ActiveRecord::Base
   validate :host_must_be_valid
   belongs_to :category
+  after_destroy :reset_embedding_settings
 
   before_validation do
     self.host.sub!(/^https?:\/\//, '')
@@ -14,7 +15,7 @@ class EmbeddableHost < ActiveRecord::Base
     if uri.is_a?(String)
       uri = begin
         URI(UrlHelper.escape_uri(uri))
-      rescue URI::InvalidURIError
+      rescue URI::Error
       end
     end
     return false unless uri.present?
@@ -45,13 +46,19 @@ class EmbeddableHost < ActiveRecord::Base
 
     uri = begin
       URI(UrlHelper.escape_uri(url))
-    rescue URI::InvalidURIError
+    rescue URI::Error
     end
 
     uri.present? && record_for_url(uri).present?
   end
 
   private
+
+  def reset_embedding_settings
+    unless EmbeddableHost.exists?
+      Embedding.settings.each { |s| SiteSetting.set(s.to_s, SiteSetting.defaults[s]) }
+    end
+  end
 
   def host_must_be_valid
     if host !~ /\A[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,10}(:[0-9]{1,5})?(\/.*)?\Z/i &&

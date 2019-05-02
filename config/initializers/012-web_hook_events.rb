@@ -1,5 +1,4 @@
 %i(
-  topic_destroyed
   topic_recovered
 ).each do |event|
   DiscourseEvent.on(event) do |topic, _|
@@ -17,7 +16,6 @@ end
 
 %i(
   post_created
-  post_destroyed
   post_recovered
 ).each do |event|
   DiscourseEvent.on(event) do |post, _, _|
@@ -41,7 +39,6 @@ end
   user_logged_in
   user_approved
   user_updated
-  user_destroyed
 ).each do |event|
   DiscourseEvent.on(event) do |user|
     WebHook.enqueue_object_hooks(:user, user, event)
@@ -51,7 +48,6 @@ end
 %i(
   group_created
   group_updated
-  group_destroyed
 ).each do |event|
   DiscourseEvent.on(event) do |group|
     WebHook.enqueue_object_hooks(:group, group, event)
@@ -61,7 +57,6 @@ end
 %i(
   category_created
   category_updated
-  category_destroyed
 ).each do |event|
   DiscourseEvent.on(event) do |category|
     WebHook.enqueue_object_hooks(:category, category, event)
@@ -71,7 +66,6 @@ end
 %i(
   tag_created
   tag_updated
-  tag_destroyed
 ).each do |event|
   DiscourseEvent.on(event) do |tag|
     WebHook.enqueue_object_hooks(:tag, tag, event, TagSerializer)
@@ -89,12 +83,24 @@ end
   end
 end
 
-%i(
-  queued_post_created
-  approved_post
-  rejected_post
-).each do |event|
-  DiscourseEvent.on(event) do |queued_post|
-    WebHook.enqueue_object_hooks(:queued_post, queued_post, event, QueuedPostSerializer)
+DiscourseEvent.on(:reviewable_created) do |reviewable|
+  WebHook.enqueue_object_hooks(:reviewable, reviewable, :reviewable_created, reviewable.serializer)
+
+  # TODO: Backwards compatibility for Queued Post webhooks. Remve in favor of Reviewable API
+  if reviewable.is_a?(ReviewableQueuedPost)
+    WebHook.enqueue_object_hooks(:queued_post, reviewable, :queued_post_created, reviewable.serializer)
+  end
+end
+
+DiscourseEvent.on(:reviewable_transitioned_to) do |status, reviewable|
+  WebHook.enqueue_object_hooks(:reviewable, reviewable, :reviewable_transitioned_to, reviewable.serializer)
+
+  # TODO: Backwards compatibility for Queued Post webhooks. Remve in favor of Reviewable API
+  if reviewable.is_a?(ReviewableQueuedPost)
+    if reviewable.approved?
+      WebHook.enqueue_object_hooks(:queued_post, reviewable, :approved_post, QueuedPostSerializer)
+    elsif reviewable.rejected?
+      WebHook.enqueue_object_hooks(:queued_post, reviewable, :rejected_post, QueuedPostSerializer)
+    end
   end
 end

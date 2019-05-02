@@ -11,11 +11,14 @@ const CUSTOM_TYPES = [
   "value_list",
   "category",
   "uploaded_image_list",
-  "compact_list"
+  "compact_list",
+  "secret_list",
+  "upload",
+  "group_list"
 ];
 
 export default Ember.Mixin.create({
-  classNameBindings: [":row", ":setting", "setting.overridden", "typeClass"],
+  classNameBindings: [":row", ":setting", "overridden", "typeClass"],
   content: Ember.computed.alias("setting"),
   validationMessage: null,
   isSecret: Ember.computed.oneWay("setting.secret"),
@@ -79,12 +82,16 @@ export default Ember.Mixin.create({
     return "site-settings/" + typeClass;
   },
 
+  @computed("setting.default", "buffered.value")
+  overridden(settingDefault, bufferedValue) {
+    return settingDefault !== bufferedValue;
+  },
+
   _watchEnterKey: function() {
-    const self = this;
-    this.$().on("keydown.setting-enter", ".input-setting-string", function(e) {
+    this.$().on("keydown.setting-enter", ".input-setting-string", e => {
       if (e.keyCode === 13) {
         // enter key
-        self._save();
+        this.send("save");
       }
     });
   }.on("didInsertElement"),
@@ -94,8 +101,8 @@ export default Ember.Mixin.create({
   }.on("willDestroyElement"),
 
   _save() {
-    Em.warn("You should define a `_save` method", {
-      id: "admin.mixins.setting-component"
+    Ember.warn("You should define a `_save` method", {
+      id: "discourse.setting-component.missing-save"
     });
     return Ember.RSVP.resolve();
   },
@@ -106,6 +113,7 @@ export default Ember.Mixin.create({
         .then(() => {
           this.set("validationMessage", null);
           this.commitBuffer();
+          this.afterSave();
         })
         .catch(e => {
           if (e.jqXHR.responseJSON && e.jqXHR.responseJSON.errors) {
@@ -122,7 +130,6 @@ export default Ember.Mixin.create({
 
     resetDefault() {
       this.set("buffered.value", this.get("setting.default"));
-      this._save();
     },
 
     toggleSecret() {

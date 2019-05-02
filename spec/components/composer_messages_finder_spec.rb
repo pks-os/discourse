@@ -1,4 +1,6 @@
 # encoding: utf-8
+# frozen_string_literal: true
+
 require 'rails_helper'
 require 'composer_messages_finder'
 
@@ -464,6 +466,33 @@ describe ComposerMessagesFinder do
           expect(described_class.new(user, composer_action: 'reply', topic_id: topic.id).check_reviving_old_topic).to be_blank
         end
       end
+    end
+  end
+
+  context 'when editing a post' do
+    let(:user) { Fabricate(:user) }
+    let(:topic) { Fabricate(:post).topic }
+
+    let!(:post) do
+      PostCreator.create!(
+        user,
+        topic_id: topic.id,
+        post_number: 1,
+        raw: 'omg my first post'
+      )
+    end
+
+    let(:edit_post_finder) do
+      ComposerMessagesFinder.new(user, composer_action: 'edit')
+    end
+
+    before do
+      SiteSetting.disable_avatar_education_message = true
+      SiteSetting.educate_until_posts = 2
+    end
+
+    it "returns nothing even if it normally would" do
+      expect(edit_post_finder.find).to eq(nil)
     end
   end
 

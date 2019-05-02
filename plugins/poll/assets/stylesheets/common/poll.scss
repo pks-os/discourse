@@ -1,5 +1,5 @@
 div.poll {
-  margin: 10px 0;
+  margin: 1em 0;
   border: 1px solid $primary-low;
 
   @include unselectable;
@@ -15,64 +15,61 @@ div.poll {
 
   li {
     cursor: pointer;
-    font-size: 15px;
-    margin-bottom: 10px;
+    font-size: $font-up-1;
   }
 
   li[data-poll-option-id] {
     color: $primary;
-    padding: 0.5em 0.7em 0.7em 0.5em;
+    padding: 0.5em 0;
   }
 
   img {
-    max-width: 100% !important; /* needed to override internal styles */
+    // needed to override internal styles in image-sizing hack
+    max-width: 100% !important;
     height: auto;
   }
 
   .poll-info {
     color: $primary-medium;
-    text-align: center;
     vertical-align: middle;
-
-    .info-number {
-      font-size: 3.5em;
-    }
+    padding: 1em 0;
 
     .info-label {
-      font-size: 1.7em;
+      font-size: $font-up-4;
+      line-height: $line-height-medium;
     }
 
     .info-text {
-      margin: 5px 0;
+      margin: 0.25em 0;
       display: block;
     }
   }
 
   .poll-container {
     vertical-align: middle;
-    padding: 10px;
+    padding: 0.5em 1em;
 
     .poll-results-number-rating {
-      font-size: 2em;
+      font-size: $font-up-5;
     }
   }
 
   .poll-buttons {
-    button {
-      float: none;
-    }
     .info-text {
-      margin: 0 5px;
+      margin: 0.25em 0;
       color: $primary-medium;
+    }
+    .info-text + .info-text,
+    button + .info-text {
+      margin-left: 0.5em;
     }
   }
 
-  .poll-voters-list {
+  .poll-voters:not(:empty) {
+    margin-bottom: 0.25em;
     li {
       display: inline;
     }
-
-    margin-top: 4px;
   }
 
   .poll-voters-toggle-expand {
@@ -81,18 +78,23 @@ div.poll {
   }
 
   .results {
+    > li {
+      cursor: default;
+      padding: 0.25em 0;
+      &:last-child {
+        padding-bottom: 0;
+      }
+    }
     .option {
-      padding-bottom: 5px;
       p {
         margin: 0;
       }
     }
 
     .percentage {
-      font-size: 20px;
       float: right;
       color: $primary-medium;
-      margin-left: 5px;
+      margin-left: 0.25em;
     }
 
     .bar-back {
@@ -100,7 +102,7 @@ div.poll {
     }
 
     .bar {
-      height: 10px;
+      height: 0.75em;
       background: $primary-medium;
     }
 
@@ -112,8 +114,18 @@ div.poll {
   &[data-poll-type="number"] {
     li[data-poll-option-id] {
       display: inline-block;
-      width: 45px;
-      margin-right: 5px;
+      width: 3.25em;
+      margin-right: 0.25em;
+    }
+  }
+}
+
+// hides 0 vote count in crawler and print view
+body.crawler {
+  .poll {
+    .poll-info,
+    .poll-button {
+      display: none;
     }
   }
 }

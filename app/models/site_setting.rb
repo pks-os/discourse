@@ -1,7 +1,9 @@
 require 'site_setting_extension'
+require_dependency 'global_path'
 require_dependency 'site_settings/yaml_loader'
 
 class SiteSetting < ActiveRecord::Base
+  extend GlobalPath
   extend SiteSettingExtension
 
   validates_presence_of :name
@@ -19,7 +21,6 @@ class SiteSetting < ActiveRecord::Base
   end
 
   load_settings(File.join(Rails.root, 'config', 'site_settings.yml'))
-  setup_deprecated_methods
 
   unless Rails.env.test? && ENV['LOAD_PLUGINS'] != "1"
     Dir[File.join(Rails.root, "plugins", "*", "config", "settings.yml")].each do |file|
@@ -27,6 +28,7 @@ class SiteSetting < ActiveRecord::Base
     end
   end
 
+  setup_deprecated_methods
   client_settings << :available_locales
 
   def self.available_locales
@@ -77,7 +79,7 @@ class SiteSetting < ActiveRecord::Base
 
     host = URI.parse(src).host
     return !(setting.split('|').include?(host))
-  rescue URI::InvalidURIError
+  rescue URI::Error
     return true
   end
 
@@ -102,6 +104,11 @@ class SiteSetting < ActiveRecord::Base
     nil
   end
 
+  def self.queue_jobs=(val)
+    Discourse.deprecate("queue_jobs is deprecated. Please use Jobs.run_immediately! instead")
+    val ? Jobs.run_later! : Jobs.run_immediately!
+  end
+
   def self.email_polling_enabled?
     SiteSetting.manual_polling_enabled? || SiteSetting.pop3_polling_enabled?
   end
@@ -112,6 +119,11 @@ class SiteSetting < ActiveRecord::Base
 
   def self.attachment_filename_blacklist_regex
     @attachment_filename_blacklist_regex ||= Regexp.union(SiteSetting.attachment_filename_blacklist.split("|"))
+  end
+
+  def self.unicode_username_character_whitelist_regex
+    @unicode_username_whitelist_regex = SiteSetting.unicode_username_character_whitelist.present? \
+      ? Regexp.new(SiteSetting.unicode_username_character_whitelist) : nil
   end
 
   # helpers for getting s3 settings that fallback to global
@@ -132,10 +144,6 @@ class SiteSetting < ActiveRecord::Base
       SiteSetting.enable_s3_uploads ? SiteSetting.s3_endpoint : GlobalSetting.s3_endpoint
     end
 
-    def self.s3_force_path_style
-      SiteSetting.enable_s3_uploads ? SiteSetting.s3_force_path_style : GlobalSetting.s3_force_path_style
-    end
-
     def self.enable_s3_uploads
       SiteSetting.enable_s3_uploads || GlobalSetting.use_s3?
     end
@@ -150,16 +158,12 @@ class SiteSetting < ActiveRecord::Base
       bucket = SiteSetting.enable_s3_uploads ? Discourse.store.s3_bucket_name : GlobalSetting.s3_bucket_name
 
       # cf. http://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
-      if SiteSetting.s3_endpoint == "https://s3.amazonaws.com"
-        if SiteSetting.Upload.s3_region == "us-east-1"
-          "//#{bucket}.s3.amazonaws.com"
-        elsif SiteSetting.Upload.s3_region == 'cn-north-1'
-          "//#{bucket}.s3.cn-north-1.amazonaws.com.cn"
+      if SiteSetting.s3_endpoint.blank? || SiteSetting.s3_endpoint.end_with?("amazonaws.com")
+        if SiteSetting.Upload.s3_region.start_with?("cn-")
+          "//#{bucket}.s3.#{SiteSetting.Upload.s3_region}.amazonaws.com.cn"
         else
-          "//#{bucket}.s3-#{SiteSetting.Upload.s3_region}.amazonaws.com"
+          "//#{bucket}.s3.dualstack.#{SiteSetting.Upload.s3_region}.amazonaws.com"
         end
-      elsif SiteSetting.s3_force_path_style
-        "//#{url_basename}/#{bucket}"
       else
         "//#{bucket}.#{url_basename}"
       end
@@ -168,6 +172,36 @@ class SiteSetting < ActiveRecord::Base
 
   def self.Upload
     SiteSetting::Upload
+  end
+
+  %i{
+    site_logo_url
+    site_logo_small_url
+    site_mobile_logo_url
+    site_favicon_url
+  }.each { |client_setting| client_settings << client_setting }
+
+  %i{
+    logo
+    logo_small
+    digest_logo
+    mobile_logo
+    large_icon
+    manifest_icon
+    favicon
+    apple_touch_icon
+    twitter_summary_large_image
+    opengraph_image
+    push_notifications_icon
+  }.each do |setting_name|
+    define_singleton_method("site_#{setting_name}_url") do
+      if SiteIconManager.respond_to?("#{setting_name}_url")
+        return SiteIconManager.public_send("#{setting_name}_url")
+      end
+
+      upload = self.public_send(setting_name)
+      upload ? full_cdn_url(upload.url) : ''
+    end
   end
 
   def self.shared_drafts_enabled?
@@ -187,4 +221,8 @@ end
 #  value      :text
 #  created_at :datetime         not null
 #  updated_at :datetime         not null
+#
+# Indexes
+#
+#  index_site_settings_on_name  (name) UNIQUE
 #

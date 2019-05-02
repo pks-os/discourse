@@ -1,3 +1,23 @@
+if Rails.env.development? && RUBY_VERSION.match?(/^2\.5\.[23]/)
+  STDERR.puts "WARNING: Discourse development environment runs slower on Ruby 2.5.3 or below"
+  STDERR.puts "We recommend you upgrade to Ruby 2.6.1 for the optimal development performance"
+
+  # we have to used to older and slower version of the logger cause the new one exposes a Ruby bug in
+  # the Queue class which causes segmentation faults
+  Logster::Scheduler.disable
+end
+
+if Rails.env.development? && !Sidekiq.server? && ENV["RAILS_LOGS_STDOUT"] == "1"
+  console = ActiveSupport::Logger.new(STDOUT)
+  original_logger = Rails.logger.chained.first
+  console.formatter = original_logger.formatter
+  console.level = original_logger.level
+
+  unless ActiveSupport::Logger.logger_outputs_to?(original_logger, STDOUT)
+    original_logger.extend(ActiveSupport::Logger.broadcast(console))
+  end
+end
+
 if Rails.env.production?
   Logster.store.ignore = [
     # honestly, Rails should not be logging this, its real noisy
@@ -39,9 +59,20 @@ if Rails.env.production?
 
     # we handle this cleanly in the message bus middleware
     # no point logging to logster
-    /RateLimiter::LimitExceeded.*/m
+    /RateLimiter::LimitExceeded.*/m,
+
+    # see https://github.com/rails/rails/issues/34599
+    # Poll defines an enum with the value `open` ActiveRecord then attempts
+    # AR then warns cause #open is being redefined, it is already defined
+    # privately in Kernel per: http://ruby-doc.org/core-2.5.3/Kernel.html#method-i-open
+    # Once the rails issue is fixed we can stop this error suppression and stop defining
+    # scopes for the enums
+    /^Creating scope :open\. Overwriting existing method Poll\.open\./,
   ]
+  Logster.config.env_expandable_keys.push(:hostname, :problem_db)
 end
+
+Logster.store.max_backlog = GlobalSetting.max_logster_logs
 
 # middleware that logs errors sits before multisite
 # we need to establish a connection so redis connection is good
@@ -63,6 +94,7 @@ Logster.config.current_context = lambda { |env, &blk|
 Logster.config.subdirectory = "#{GlobalSetting.relative_url_root}/logs"
 
 Logster.config.application_version = Discourse.git_version
+Logster.config.enable_custom_patterns_via_ui = true
 
 store = Logster.store
 redis = Logster.store.redis
@@ -75,7 +107,14 @@ RailsMultisite::ConnectionManagement.each_connection do
 
   if (error_rate_per_minute || 0) > 0
     store.register_rate_limit_per_minute(severities, error_rate_per_minute) do |rate|
-      MessageBus.publish("/logs_error_rate_exceeded", rate: rate, duration: 'minute', publish_at: Time.current.to_i)
+      MessageBus.publish("/logs_error_rate_exceeded",
+        {
+          rate: rate,
+          duration: 'minute',
+          publish_at: Time.current.to_i
+        },
+        group_ids: [Group::AUTO_GROUPS[:admins]]
+      )
     end
   end
 
@@ -83,12 +122,19 @@ RailsMultisite::ConnectionManagement.each_connection do
 
   if (error_rate_per_hour || 0) > 0
     store.register_rate_limit_per_hour(severities, error_rate_per_hour) do |rate|
-      MessageBus.publish("/logs_error_rate_exceeded", rate: rate, duration: 'hour', publish_at: Time.current.to_i)
+      MessageBus.publish("/logs_error_rate_exceeded",
+        {
+          rate: rate,
+          duration: 'hour',
+          publish_at: Time.current.to_i,
+        },
+        group_ids: [Group::AUTO_GROUPS[:admins]]
+      )
     end
   end
 end
 
 if Rails.configuration.multisite
-  chained = Rails.logger.instance_variable_get(:@chained)
+  chained = Rails.logger.chained
   chained && chained.first.formatter = RailsMultisite::Formatter.new
 end

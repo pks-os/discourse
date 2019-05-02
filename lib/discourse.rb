@@ -13,6 +13,7 @@ if Rails.env.development?
 end
 
 module Discourse
+  DB_POST_MIGRATE_PATH ||= "db/post_migrate"
 
   require 'sidekiq/exception_handler'
   class SidekiqExceptionHandler
@@ -20,12 +21,12 @@ module Discourse
   end
 
   class Utils
-    def self.execute_command(*command, failure_message: "")
+    def self.execute_command(*command, failure_message: "", success_status_codes: [0])
       stdout, stderr, status = Open3.capture3(*command)
 
-      if !status.success?
+      if !status.exited? || !success_status_codes.include?(status.exitstatus)
         failure_message = "#{failure_message}\n" if !failure_message.blank?
-        raise "#{failure_message}#{stderr}"
+        raise "#{caller[0]}: #{failure_message}#{stderr}"
       end
 
       stdout
@@ -53,6 +54,8 @@ module Discourse
       current_db: cm.current_db,
       current_hostname: cm.current_hostname
     }.merge(context))
+
+    raise ex if Rails.env.test?
   end
 
   # Expected less matches than what we got in a find
@@ -77,7 +80,18 @@ module Discourse
   end
 
   # When something they want is not found
-  class NotFound < StandardError; end
+  class NotFound < StandardError
+    attr_reader :status
+    attr_reader :check_permalinks
+    attr_reader :original_path
+
+    def initialize(message = nil, status: 404, check_permalinks: false, original_path: nil)
+      @status = status
+      @check_permalinks = check_permalinks
+      @original_path = original_path
+      super(message)
+    end
+  end
 
   # When a setting is missing
   class SiteSettingMissing < StandardError; end
@@ -92,6 +106,8 @@ module Discourse
   class CSRF < StandardError; end
 
   class Deprecation < StandardError; end
+
+  class ScssError < StandardError; end
 
   def self.filters
     @filters ||= [:latest, :unread, :new, :read, :posted, :bookmarks]
@@ -200,13 +216,12 @@ module Discourse
     end
   end
 
-  BUILTIN_AUTH = [
-    Auth::AuthProvider.new(authenticator: Auth::FacebookAuthenticator.new, frame_width: 580, frame_height: 400),
-    Auth::AuthProvider.new(authenticator: Auth::GoogleOAuth2Authenticator.new, frame_width: 850, frame_height: 500),
-    Auth::AuthProvider.new(authenticator: Auth::OpenIdAuthenticator.new("yahoo", "https://me.yahoo.com", 'enable_yahoo_logins', trusted: true)),
-    Auth::AuthProvider.new(authenticator: Auth::GithubAuthenticator.new),
-    Auth::AuthProvider.new(authenticator: Auth::TwitterAuthenticator.new),
-    Auth::AuthProvider.new(authenticator: Auth::InstagramAuthenticator.new, frame_width: 1, frame_height: 1)
+  BUILTIN_AUTH ||= [
+    Auth::AuthProvider.new(authenticator: Auth::FacebookAuthenticator.new, frame_width: 580, frame_height: 400, icon: "fab-facebook"),
+    Auth::AuthProvider.new(authenticator: Auth::GoogleOAuth2Authenticator.new, frame_width: 850, frame_height: 500), # Custom icon implemented in client
+    Auth::AuthProvider.new(authenticator: Auth::GithubAuthenticator.new, icon: "fab-github"),
+    Auth::AuthProvider.new(authenticator: Auth::TwitterAuthenticator.new, icon: "fab-twitter"),
+    Auth::AuthProvider.new(authenticator: Auth::InstagramAuthenticator.new, icon: "fab-instagram")
   ]
 
   def self.auth_providers
@@ -259,7 +274,7 @@ module Discourse
     unless uri.is_a?(URI)
       uri = begin
         URI(uri)
-      rescue URI::InvalidURIError
+      rescue URI::Error
       end
     end
 
@@ -274,6 +289,11 @@ module Discourse
     nil
   rescue ActionController::RoutingError
     nil
+  end
+
+  class << self
+    alias_method :base_path, :base_uri
+    alias_method :base_url_no_path, :base_url_no_prefix
   end
 
   READONLY_MODE_KEY_TTL  ||= 60
@@ -292,31 +312,34 @@ module Discourse
       $redis.set(key, 1)
     else
       $redis.setex(key, READONLY_MODE_KEY_TTL, 1)
-      keep_readonly_mode(key)
+      keep_readonly_mode(key) if !Rails.env.test?
     end
 
     MessageBus.publish(readonly_channel, true)
+    Site.clear_anon_cache!
     true
   end
 
   def self.keep_readonly_mode(key)
     # extend the expiry by 1 minute every 30 seconds
-    unless Rails.env.test?
+    @mutex ||= Mutex.new
+
+    @mutex.synchronize do
       @dbs ||= Set.new
       @dbs << RailsMultisite::ConnectionManagement.current_db
       @threads ||= {}
 
       unless @threads[key]&.alive?
         @threads[key] = Thread.new do
-          while @dbs.size > 0
+          while @dbs.size > 0 do
             sleep 30
 
-            @dbs.each do |db|
-              RailsMultisite::ConnectionManagement.with_connection(db) do
-                if readonly_mode?(key)
-                  $redis.expire(key, READONLY_MODE_KEY_TTL)
-                else
-                  @dbs.delete(db)
+            @mutex.synchronize do
+              @dbs.each do |db|
+                RailsMultisite::ConnectionManagement.with_connection(db) do
+                  if !$redis.expire(key, READONLY_MODE_KEY_TTL)
+                    @dbs.delete(db)
+                  end
                 end
               end
             end
@@ -329,6 +352,7 @@ module Discourse
   def self.disable_readonly_mode(key = READONLY_MODE_KEY)
     $redis.del(key)
     MessageBus.publish(readonly_channel, false)
+    Site.clear_anon_cache!
     true
   end
 
@@ -336,13 +360,17 @@ module Discourse
     recently_readonly? || $redis.mget(*keys).compact.present?
   end
 
+  def self.pg_readonly_mode?
+    $redis.get(PG_READONLY_MODE_KEY).present?
+  end
+
   def self.last_read_only
-    @last_read_only ||= {}
+    @last_read_only ||= DistributedCache.new('last_read_only', namespace: false)
   end
 
   def self.recently_readonly?
-    return false unless read_only = last_read_only[$redis.namespace]
-    read_only > 15.seconds.ago
+    read_only = last_read_only[$redis.namespace]
+    read_only.present? && read_only > 15.seconds.ago
   end
 
   def self.received_readonly!
@@ -351,6 +379,8 @@ module Discourse
 
   def self.clear_readonly!
     last_read_only[$redis.namespace] = nil
+    Site.clear_anon_cache!
+    true
   end
 
   def self.request_refresh!(user_ids: nil)
@@ -438,6 +468,10 @@ module Discourse
     end
   end
 
+  def self.stats
+    PluginStore.new("stats")
+  end
+
   def self.current_user_provider
     @current_user_provider || Auth::DefaultCurrentUserProvider
   end
@@ -475,6 +509,56 @@ module Discourse
 
     Tilt::ES6ModuleTranspilerTemplate.reset_context if defined? Tilt::ES6ModuleTranspilerTemplate
     JsLocaleHelper.reset_context if defined? JsLocaleHelper
+    nil
+  end
+
+  # you can use Discourse.warn when you want to report custom environment
+  # with the error, this helps with grouping
+  def self.warn(message, env = nil)
+    append = env ? (+" ") << env.map { |k, v|"#{k}: #{v}" }.join(" ") : ""
+
+    if !(Logster::Logger === Rails.logger)
+      Rails.logger.warn("#{message}#{append}")
+      return
+    end
+
+    loggers = [Rails.logger]
+    if Rails.logger.chained
+      loggers.concat(Rails.logger.chained)
+    end
+
+    logster_env = env
+
+    if old_env = Thread.current[Logster::Logger::LOGSTER_ENV]
+      logster_env = Logster::Message.populate_from_env(old_env)
+
+      # a bit awkward by try to keep the new params
+      env.each do |k, v|
+        logster_env[k] = v
+      end
+    end
+
+    loggers.each do |logger|
+      if !(Logster::Logger === logger)
+        logger.warn("#{message} #{append}")
+        next
+      end
+
+      logger.store.report(
+        ::Logger::Severity::WARN,
+        "discourse",
+        message,
+        env: logster_env
+      )
+    end
+
+    if old_env
+      env.each do |k, v|
+        # do not leak state
+        logster_env.delete(k)
+      end
+    end
+
     nil
   end
 
@@ -535,10 +619,23 @@ module Discourse
     end
   end
 
-  def self.deprecate(warning)
-    location = caller_locations[1]
-    warning = "Deprecation Notice: #{warning}\nAt: #{location.label} #{location.path}:#{location.lineno}"
+  def self.deprecate(warning, drop_from: nil, since: nil, raise_error: false, output_in_test: false)
+    location = caller_locations[1].yield_self { |l| "#{l.path}:#{l.lineno}:in \`#{l.label}\`" }
+    warning = ["Deprecation notice:", warning]
+    warning << "(deprecated since Discourse #{since})" if since
+    warning << "(removal in Discourse #{drop_from})" if drop_from
+    warning << "\nAt #{location}"
+    warning = warning.join(" ")
+
+    if raise_error
+      raise Deprecation.new(warning)
+    end
+
     if Rails.env == "development"
+      STDERR.puts(warning)
+    end
+
+    if output_in_test && Rails.env == "test"
       STDERR.puts(warning)
     end
 
@@ -585,6 +682,10 @@ module Discourse
 
   def self.running_in_rack?
     ENV["DISCOURSE_RUNNING_IN_RACK"] == "1"
+  end
+
+  def self.skip_post_deployment_migrations?
+    ['1', 'true'].include?(ENV["SKIP_POST_DEPLOYMENT_MIGRATIONS"]&.to_s)
   end
 
 end

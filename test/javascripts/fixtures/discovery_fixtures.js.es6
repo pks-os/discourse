@@ -11,7 +11,12 @@ export default {
         username: "stellarhopper",
         avatar_template: "/images/avatar.png"
       },
-      { id: 19, username: "eviltrout", avatar_template: "/images/avatar.png" },
+      {
+        id: 19,
+        username: "eviltrout",
+        name: "Evil Trout",
+        avatar_template: "/images/avatar.png"
+      },
       { id: 14, username: "clay", avatar_template: "/images/avatar.png" },
       {
         id: 32,
@@ -1862,7 +1867,7 @@ export default {
         {
           id: 17,
           name: "uncategorized",
-          color: "AB9364",
+          color: "0088CC",
           text_color: "FFFFFF",
           slug: "uncategorized",
           topic_count: 229,
@@ -4957,7 +4962,8 @@ export default {
           bumped: true,
           bumped_at: "2014-01-16T11:04:32.000-05:00",
           unseen: false,
-          pinned: false,
+          pinned: true,
+          excerpt: "Hello world",
           visible: true,
           closed: false,
           archived: false,
@@ -5906,7 +5912,7 @@ export default {
         {
           id: 1,
           name: "Uncategorized",
-          color: "AB9364",
+          color: "0088CC",
           text_color: "FFFFFF",
           slug: "uncategorized",
           topic_count: 1,
@@ -5916,8 +5922,6 @@ export default {
             "Topics that don't need a category, or don't fit into any other existing category.",
           description_text: "",
           topic_url: null,
-          logo_url: null,
-          background_url: null,
           read_restricted: false,
           permission: null,
           notification_level: null,
@@ -5935,7 +5939,7 @@ export default {
         {
           id: 3,
           name: "Site Feedback",
-          color: "808281",
+          color: "27AA5B",
           text_color: "FFFFFF",
           slug: "site-feedback",
           topic_count: 0,
@@ -5946,7 +5950,6 @@ export default {
           description_text:
             "Discussion about this site, its organization, how it works, and how we can improve it.",
           topic_url: "/t/about-the-site-feedback-category/2",
-          logo_url: null,
           background_url: null,
           read_restricted: false,
           permission: null,

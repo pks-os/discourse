@@ -1,23 +1,65 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 RSpec.describe ListController do
   let(:topic) { Fabricate(:topic, user: user) }
   let(:group) { Fabricate(:group) }
   let(:user) { Fabricate(:user) }
-  let(:post) { Fabricate(:post, user: user) }
+  let(:admin) { Fabricate(:admin) }
 
   before do
+    admin  # to skip welcome wizard at home page `/`
     SiteSetting.top_menu = 'latest|new|unread|categories'
   end
 
   describe '#index' do
-    it "doesn't throw an error with a negative page" do
-      get "/#{Discourse.anonymous_filters[1]}", params: { page: -1024 }
-      expect(response.status).to eq(200)
+    it "does not return a 500 for invalid input" do
+      get "/latest?min_posts=bob"
+      expect(response.status).to eq(400)
+
+      get "/latest?max_posts=bob"
+      expect(response.status).to eq(400)
+
+      get "/latest?exclude_category_ids=bob"
+      expect(response.status).to eq(400)
+
+      get "/latest?exclude_category_ids[]=bob"
+      expect(response.status).to eq(400)
+
+      get "/latest?max_posts=1111111111111111111111111111111111111111"
+      expect(response.status).to eq(400)
+
+      get "/latest?page=-1"
+      expect(response.status).to eq(400)
+
+      get "/latest?page=2147483648"
+      expect(response.status).to eq(400)
+
+      get "/latest?page=1111111111111111111111111111111111111111"
+      expect(response.status).to eq(400)
     end
 
-    it "doesn't throw an error with page params as an array" do
-      get "/#{Discourse.anonymous_filters[1]}", params: { page: ['7'] }
+    it "returns 200 for legit requests" do
+      get "/latest.json?exclude_category_ids%5B%5D=69&exclude_category_ids%5B%5D=70&no_definitions=true&no_subcategories=false&page=1&_=1534296100767"
+      expect(response.status).to eq(200)
+
+      get "/latest.json?exclude_category_ids=-1"
+      expect(response.status).to eq(200)
+
+      get "/latest.json?max_posts=12"
+      expect(response.status).to eq(200)
+
+      get "/latest.json?min_posts=0"
+      expect(response.status).to eq(200)
+
+      get "/latest?page=0"
+      expect(response.status).to eq(200)
+
+      get "/latest?page=1"
+      expect(response.status).to eq(200)
+
+      get "/latest.json?page=2147483647"
       expect(response.status).to eq(200)
     end
 
@@ -37,6 +79,17 @@ RSpec.describe ListController do
       expect(response.status).to eq(200)
       parsed = JSON.parse(response.body)
       expect(parsed["topic_list"]["topics"].length).to eq(1)
+    end
+
+    it "shows correct title if topic list is set for homepage" do
+      get "/"
+
+      expect(response.body).to have_tag "title", text: "Discourse"
+
+      SiteSetting.short_site_description = "Best community"
+      get "/"
+
+      expect(response.body).to have_tag "title", text: "Discourse - Best community"
     end
   end
 
@@ -148,8 +201,6 @@ RSpec.describe ListController do
       )
     end
 
-    let(:private_post) { Fabricate(:post, topic: topic) }
-
     it 'should return the right response' do
       get "/topics/private-messages-group/#{user.username}/#{group.name}.json"
 
@@ -240,6 +291,17 @@ RSpec.describe ListController do
       get "/latest.rss"
       expect(response.status).to eq(200)
       expect(response.content_type).to eq('application/rss+xml')
+    end
+
+    it 'renders links correctly with subfolder' do
+      GlobalSetting.stubs(:relative_url_root).returns('/forum')
+      Discourse.stubs(:base_uri).returns("/forum")
+      post = Fabricate(:post, topic: topic, user: user)
+      get "/latest.rss"
+      expect(response.status).to eq(200)
+      expect(response.body).to_not include("/forum/forum")
+      expect(response.body).to include("http://test.localhost/forum/t/#{topic.slug}")
+      expect(response.body).to include("http://test.localhost/forum/u/#{post.user.username}")
     end
 
     it 'renders top RSS' do
@@ -343,11 +405,20 @@ RSpec.describe ListController do
           expect(response.status).to eq(200)
           expect(response.content_type).to eq('application/rss+xml')
         end
+
+        it "renders RSS in subfolder correctly" do
+          GlobalSetting.stubs(:relative_url_root).returns('/forum')
+          Discourse.stubs(:base_uri).returns("/forum")
+          get "/c/#{category.slug}.rss"
+          expect(response.status).to eq(200)
+          expect(response.body).to_not include("/forum/forum")
+          expect(response.body).to include("http://test.localhost/forum/c/#{category.slug}")
+        end
       end
 
       describe "category default views" do
         it "has a top default view" do
-          category.update_attributes!(default_view: 'top', default_top_period: 'monthly')
+          category.update!(default_view: 'top', default_top_period: 'monthly')
           get "/c/#{category.slug}.json"
           expect(response.status).to eq(200)
           json = JSON.parse(response.body)
@@ -355,7 +426,7 @@ RSpec.describe ListController do
         end
 
         it "has a default view of nil" do
-          category.update_attributes!(default_view: nil)
+          category.update!(default_view: nil)
           get "/c/#{category.slug}.json"
           expect(response.status).to eq(200)
           json = JSON.parse(response.body)
@@ -363,7 +434,7 @@ RSpec.describe ListController do
         end
 
         it "has a default view of ''" do
-          category.update_attributes!(default_view: '')
+          category.update!(default_view: '')
           get "/c/#{category.slug}.json"
           expect(response.status).to eq(200)
           json = JSON.parse(response.body)
@@ -371,7 +442,7 @@ RSpec.describe ListController do
         end
 
         it "has a default view of latest" do
-          category.update_attributes!(default_view: 'latest')
+          category.update!(default_view: 'latest')
           get "/c/#{category.slug}.json"
           expect(response.status).to eq(200)
           json = JSON.parse(response.body)
@@ -403,6 +474,14 @@ RSpec.describe ListController do
 
     it "should respond with a list" do
       get "/topics/created-by/#{user.username}.json"
+      expect(response.status).to eq(200)
+      json = JSON.parse(response.body)
+      expect(json["topic_list"]["topics"].size).to eq(1)
+    end
+
+    it "should work with period in username" do
+      user.update!(username: "myname.test")
+      get "/topics/created-by/#{user.username}", xhr: true
       expect(response.status).to eq(200)
       json = JSON.parse(response.body)
       expect(json["topic_list"]["topics"].size).to eq(1)

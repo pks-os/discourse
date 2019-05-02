@@ -75,14 +75,19 @@ after_initialize do
     class CertificatesController < ::ApplicationController
       layout :false
       skip_before_action :check_xhr
+      requires_login
 
       def generate
-        raise Discourse::InvalidParameters.new('user_id must be present') unless params[:user_id]&.present?
+        unless params[:user_id]&.present?
+          raise Discourse::InvalidParameters.new('user_id must be present')
+        end
 
         user = User.find_by(id: params[:user_id])
         raise Discourse::NotFound if user.blank?
 
-        raise Discourse::InvalidParameters.new('date must be present') unless params[:date]&.present?
+        unless params[:date]&.present?
+          raise Discourse::InvalidParameters.new('date must be present')
+        end
 
         generator = CertificateGenerator.new(user, params[:date])
 
@@ -114,7 +119,7 @@ after_initialize do
   end
 
   self.add_model_callback(User, :after_commit, on: :create) do
-    if SiteSetting.discourse_narrative_bot_welcome_post_delay == 0
+    if SiteSetting.discourse_narrative_bot_welcome_post_delay == 0 && !self.staged
       self.enqueue_bot_welcome_post
     end
   end
@@ -149,7 +154,7 @@ after_initialize do
 
   self.add_to_class(:user, :enqueue_narrative_bot_job?) do
     SiteSetting.discourse_narrative_bot_enabled &&
-      self.id > 0 &&
+      self.human? &&
       !self.anonymous? &&
       !self.staged &&
       !SiteSetting.discourse_narrative_bot_ignored_usernames.split('|'.freeze).include?(self.username)
@@ -199,7 +204,7 @@ after_initialize do
   end
 
   self.add_model_callback(PostAction, :after_commit, on: :create) do
-    if self.user.enqueue_narrative_bot_job?
+    if self.post && self.user.enqueue_narrative_bot_job?
       input =
         case self.post_action_type_id
         when *PostActionType.flag_types_without_custom.values

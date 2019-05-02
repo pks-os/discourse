@@ -2,6 +2,8 @@
 require_dependency 'search'
 
 class SearchIndexer
+  INDEX_VERSION = 2
+  REINDEX_VERSION = 0
 
   def self.disable
     @disabled = true
@@ -11,19 +13,24 @@ class SearchIndexer
     @disabled = false
   end
 
-  def self.scrub_html_for_search(html)
-    HtmlScrubber.scrub(html)
+  def self.scrub_html_for_search(html, strip_diacritics: SiteSetting.search_ignore_accents)
+    HtmlScrubber.scrub(html, strip_diacritics: strip_diacritics)
   end
 
   def self.inject_extra_terms(raw)
     # insert some extra words for I.am.a.word so "word" is tokenized
     # I.am.a.word becomes I.am.a.word am a word
     raw.gsub(/[^[:space:]]*[\.]+[^[:space:]]*/) do |with_dot|
-      split = with_dot.split(".")
-      if split.length > 1
-        with_dot + ((+" ") << split[1..-1].join(" "))
+      if with_dot.match?(PlainTextToMarkdown::URL_REGEX)
+        "#{with_dot} #{URI.parse(with_dot).hostname.gsub('.', ' ')}"
       else
-        with_dot
+        split = with_dot.split(".")
+
+        if split.length > 1
+          with_dot + ((+" ") << split[1..-1].join(" "))
+        else
+          with_dot
+        end
       end
     end
   end
@@ -56,7 +63,7 @@ class SearchIndexer
       raw_data: indexed_data,
       id: id,
       locale: SiteSetting.default_locale,
-      version: Search::INDEX_VERSION
+      version: INDEX_VERSION
     }
 
     # Would be nice to use AR here but not sure how to execut Postgres functions
@@ -105,23 +112,26 @@ class SearchIndexer
   end
 
   def self.update_tags_index(tag_id, name)
-    update_index(table: 'tag', id: tag_id, raw_data: [name])
+    update_index(table: 'tag', id: tag_id, raw_data: [name.downcase])
   end
 
   def self.queue_post_reindex(topic_id)
     return if @disabled
 
-    DB.exec(<<~SQL, topic_id: topic_id)
+    DB.exec(<<~SQL, topic_id: topic_id, version: REINDEX_VERSION)
       UPDATE post_search_data
-      SET version = 0
-      WHERE post_id IN (SELECT id FROM posts WHERE topic_id = :topic_id)
+      SET version = :version
+      FROM posts
+      WHERE post_search_data.post_id = posts.id
+      AND posts.topic_id = :topic_id
     SQL
   end
 
   def self.index(obj, force: false)
     return if @disabled
 
-    category_name, tag_names = nil
+    category_name = nil
+    tag_names = nil
     topic = nil
 
     if Topic === obj
@@ -133,12 +143,16 @@ class SearchIndexer
     category_name = topic.category&.name if topic
     tag_names = topic.tags.pluck(:name).join(' ') if topic
 
-    if Post === obj && (obj.saved_change_to_cooked? || force)
+    if Post === obj && obj.raw.present? &&
+       (
+         obj.saved_change_to_cooked? ||
+         obj.saved_change_to_topic_id? ||
+         force
+       )
+
       if topic
         SearchIndexer.update_posts_index(obj.id, topic.title, category_name, tag_names, obj.cooked)
         SearchIndexer.update_topics_index(topic.id, topic.title, obj.cooked) if obj.is_first_post?
-      else
-        Rails.logger.warn("Orphan post skipped in search_indexer, topic_id: #{obj.topic_id} post_id: #{obj.id} raw: #{obj.raw}")
       end
     end
 
@@ -148,8 +162,7 @@ class SearchIndexer
 
     if Topic === obj && (obj.saved_change_to_title? || force)
       if obj.posts
-        post = obj.posts.find_by(post_number: 1)
-        if post
+        if post = obj.posts.find_by(post_number: 1)
           SearchIndexer.update_posts_index(post.id, obj.title, category_name, tag_names, post.cooked)
           SearchIndexer.update_topics_index(obj.id, obj.title, post.cooked)
         end
@@ -166,47 +179,75 @@ class SearchIndexer
   end
 
   class HtmlScrubber < Nokogiri::XML::SAX::Document
+
     attr_reader :scrubbed
 
-    def initialize
+    def initialize(strip_diacritics: false)
       @scrubbed = +""
+      @strip_diacritics = strip_diacritics
     end
 
-    def self.scrub(html)
-      me = new
-      parser = Nokogiri::HTML::SAX::Parser.new(me)
-      begin
-        copy = +"<div>"
-        copy << html unless html.nil?
-        copy << "</div>"
-        parser.parse(html) unless html.nil?
+    def self.scrub(html, strip_diacritics: false)
+      return +"" if html.blank?
+
+      document = Nokogiri::HTML("<div>#{html}</div>", nil, Encoding::UTF_8.to_s)
+
+      nodes = document.css(
+        "div.#{CookedPostProcessor::LIGHTBOX_WRAPPER_CSS_CLASS}"
+      )
+
+      if nodes.present?
+        nodes.each do |node|
+          node.traverse do |child_node|
+            next if child_node == node
+
+            if %w{a img}.exclude?(child_node.name)
+              child_node.remove
+            elsif child_node.name == "a"
+              ATTRIBUTES.each do |attribute|
+                child_node.remove_attribute(attribute)
+              end
+            end
+          end
+        end
       end
-      me.scrubbed
+
+      document.css("img[class='emoji']").each do |node|
+        node.remove_attribute("alt")
+      end
+
+      document.css("a[href]").each do |node|
+        if node["href"] == node.text || MENTION_CLASSES.include?(node["class"])
+          node.remove_attribute("href")
+        end
+      end
+
+      me = new(strip_diacritics: strip_diacritics)
+      Nokogiri::HTML::SAX::Parser.new(me).parse(document.to_html)
+      me.scrubbed.squish
     end
 
-    def start_element(name, attributes = [])
+    MENTION_CLASSES ||= %w{mention mention-group}
+    ATTRIBUTES ||= %w{alt title href data-youtube-title}
+
+    def start_element(_name, attributes = [])
       attributes = Hash[*attributes.flatten]
-      if attributes["alt"]
-        scrubbed << " "
-        scrubbed << attributes["alt"]
-        scrubbed << " "
-      end
-      if attributes["title"]
-        scrubbed << " "
-        scrubbed << attributes["title"]
-        scrubbed << " "
-      end
-      if attributes["data-youtube-title"]
-        scrubbed << " "
-        scrubbed << attributes["data-youtube-title"]
-        scrubbed << " "
+
+      ATTRIBUTES.each do |attribute_name|
+        if attributes[attribute_name].present? &&
+          !(
+            attribute_name == "href" &&
+            UrlHelper.is_local(attributes[attribute_name])
+          )
+
+          characters(attributes[attribute_name])
+        end
       end
     end
 
-    def characters(string)
-      scrubbed << " "
-      scrubbed << string
-      scrubbed << " "
+    def characters(str)
+      str = Search.strip_diacritics(str) if @strip_diacritics
+      scrubbed << " #{str} "
     end
   end
 end

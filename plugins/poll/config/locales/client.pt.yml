@@ -15,8 +15,6 @@ pt:
         one: "total da votação"
         other: "total de votos"
       average_rating: "Classificação média: <strong>%{average}</strong>."
-      public:
-        title: "Os votos são públicos."
       multiple:
         help:
           at_least_min_options:
@@ -61,6 +59,8 @@ pt:
           regular: Escolha Única
           multiple: Escolha Múltipla
           number: Cotação numérica
+        poll_result:
+          label: Resultados
         poll_config:
           max: Máximo
           min: Mínimo

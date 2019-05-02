@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rails_helper"
 
 describe DiscourseSingleSignOn do
@@ -8,7 +10,7 @@ describe DiscourseSingleSignOn do
     SiteSetting.sso_url = @sso_url
     SiteSetting.enable_sso = true
     SiteSetting.sso_secret = @sso_secret
-    SiteSetting.queue_jobs = false
+    Jobs.run_immediately!
   end
 
   def make_sso
@@ -100,6 +102,31 @@ describe DiscourseSingleSignOn do
     expect(user.staged).to be(false)
 
     expect(user.name).to eq("Bob O'Bob")
+  end
+
+  context "reviewables" do
+    let(:sso) do
+      DiscourseSingleSignOn.new.tap do |sso|
+        sso.username = "staged"
+        sso.name = "Bob O'Bob"
+        sso.email = "bob@obob.com"
+        sso.external_id = "B"
+      end
+    end
+
+    it "doesn't create reviewables if we aren't approving users" do
+      user = sso.lookup_or_create_user(ip_address)
+      reviewable = ReviewableUser.find_by(target: user)
+      expect(reviewable).to be_blank
+    end
+
+    it "creates reviewables if needed" do
+      SiteSetting.must_approve_users = true
+      user = sso.lookup_or_create_user(ip_address)
+      reviewable = ReviewableUser.find_by(target: user)
+      expect(reviewable).to be_present
+      expect(reviewable).to be_pending
+    end
   end
 
   it "can set admin and moderator" do
@@ -327,6 +354,36 @@ describe DiscourseSingleSignOn do
     expect(sso.nonce).to_not be_nil
   end
 
+  context 'user locale' do
+    it 'sets default user locale if specified' do
+      SiteSetting.allow_user_locale = true
+
+      sso = DiscourseSingleSignOn.new
+      sso.username = "test"
+      sso.name = "test"
+      sso.email = "test@test.com"
+      sso.external_id = "123"
+      sso.locale = "es"
+
+      user = sso.lookup_or_create_user(ip_address)
+
+      expect(user.locale).to eq("es")
+
+      user.update_column(:locale, "he")
+
+      user = sso.lookup_or_create_user(ip_address)
+      expect(user.locale).to eq("he")
+
+      sso.locale_force_update = true
+      user = sso.lookup_or_create_user(ip_address)
+      expect(user.locale).to eq("es")
+
+      sso.locale = "fake"
+      user = sso.lookup_or_create_user(ip_address)
+      expect(user.locale).to eq("es")
+    end
+  end
+
   context 'trusting emails' do
     let(:sso) do
       sso = DiscourseSingleSignOn.new
@@ -347,6 +404,15 @@ describe DiscourseSingleSignOn do
       sso.require_activation = true
       user = sso.lookup_or_create_user(ip_address)
       expect(user.active).to eq(false)
+
+      user.activate
+
+      sso.external_id = "B"
+
+      expect do
+        sso.lookup_or_create_user(ip_address)
+      end.to raise_error(ActiveRecord::RecordInvalid)
+
     end
 
     it 'does not deactivate user if email provided is capitalized' do
@@ -490,7 +556,7 @@ describe DiscourseSingleSignOn do
       sso.avatar_url = "http://awesome.com/image.png"
       sso.suppress_welcome_message = true
 
-      FileHelper.stubs(:download).returns(file_from_fixtures("logo.png"))
+      FileHelper.stubs(:download).returns(file_from_fixtures("logo.png"), file_from_fixtures("logo.png"))
       user = sso.lookup_or_create_user(ip_address)
       user.reload
       avatar_id = user.uploaded_avatar_id
@@ -501,8 +567,7 @@ describe DiscourseSingleSignOn do
       # junk avatar id should be updated
       old_id = user.uploaded_avatar_id
       Upload.destroy(old_id)
-
-      FileHelper.stubs(:download).returns(file_from_fixtures("logo.png"))
+      FileHelper.stubs(:download).returns(file_from_fixtures("logo.png"), file_from_fixtures("logo.png"))
       user = sso.lookup_or_create_user(ip_address)
       user.reload
       avatar_id = user.uploaded_avatar_id

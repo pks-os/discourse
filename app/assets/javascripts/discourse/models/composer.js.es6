@@ -26,6 +26,7 @@ const CLOSED = "closed",
   SAVING = "saving",
   OPEN = "open",
   DRAFT = "draft",
+  FULLSCREEN = "fullscreen",
   // When creating, these fields are moved into the post model from the composer model
   _create_serializer = {
     raw: "reply",
@@ -41,7 +42,8 @@ const CLOSED = "closed",
     composer_open_duration_msecs: "composerTime",
     tags: "tags",
     featured_link: "featuredLink",
-    shared_draft: "sharedDraft"
+    shared_draft: "sharedDraft",
+    no_bump: "noBump"
   },
   _edit_topic_serializer = {
     title: "topic.title",
@@ -50,7 +52,7 @@ const CLOSED = "closed",
     featuredLink: "topic.featured_link"
   };
 
-const SAVE_LABELS = {
+export const SAVE_LABELS = {
   [EDIT]: "composer.save_edit",
   [REPLY]: "composer.reply",
   [CREATE_TOPIC]: "composer.create_topic",
@@ -59,8 +61,8 @@ const SAVE_LABELS = {
   [EDIT_SHARED_DRAFT]: "composer.save_edit"
 };
 
-const SAVE_ICONS = {
-  [EDIT]: "pencil",
+export const SAVE_ICONS = {
+  [EDIT]: "pencil-alt",
   [EDIT_SHARED_DRAFT]: "clipboard",
   [REPLY]: "reply",
   [CREATE_TOPIC]: "plus",
@@ -71,10 +73,14 @@ const SAVE_ICONS = {
 const Composer = RestModel.extend({
   _categoryId: null,
   unlistTopic: false,
+  noBump: false,
+  draftSaving: false,
+  draftSaved: false,
 
-  archetypes: function() {
+  @computed
+  archetypes() {
     return this.site.get("archetypes");
-  }.property(),
+  },
 
   @computed("action")
   sharedDraft: action => action === CREATE_SHARED_DRAFT,
@@ -114,10 +120,11 @@ const Composer = RestModel.extend({
       : null;
   },
 
-  creatingTopic: Em.computed.equal("action", CREATE_TOPIC),
-  creatingSharedDraft: Em.computed.equal("action", CREATE_SHARED_DRAFT),
-  creatingPrivateMessage: Em.computed.equal("action", PRIVATE_MESSAGE),
-  notCreatingPrivateMessage: Em.computed.not("creatingPrivateMessage"),
+  creatingTopic: Ember.computed.equal("action", CREATE_TOPIC),
+  creatingSharedDraft: Ember.computed.equal("action", CREATE_SHARED_DRAFT),
+  creatingPrivateMessage: Ember.computed.equal("action", PRIVATE_MESSAGE),
+  notCreatingPrivateMessage: Ember.computed.not("creatingPrivateMessage"),
+  notPrivateMessage: Ember.computed.not("privateMessage"),
 
   @computed("privateMessage", "archetype.hasOptions")
   showCategoryChooser(isPrivateMessage, hasOptions) {
@@ -133,24 +140,33 @@ const Composer = RestModel.extend({
     );
   },
 
-  topicFirstPost: Em.computed.or("creatingTopic", "editingFirstPost"),
+  topicFirstPost: Ember.computed.or("creatingTopic", "editingFirstPost"),
 
   @computed("action")
   editingPost: isEdit,
 
-  replyingToTopic: Em.computed.equal("action", REPLY),
+  replyingToTopic: Ember.computed.equal("action", REPLY),
 
-  viewOpen: Em.computed.equal("composeState", OPEN),
-  viewDraft: Em.computed.equal("composeState", DRAFT),
+  viewOpen: Ember.computed.equal("composeState", OPEN),
+  viewDraft: Ember.computed.equal("composeState", DRAFT),
+  viewFullscreen: Ember.computed.equal("composeState", FULLSCREEN),
+  viewOpenOrFullscreen: Ember.computed.or("viewOpen", "viewFullscreen"),
 
   composeStateChanged: function() {
-    var oldOpen = this.get("composerOpened");
+    let oldOpen = this.get("composerOpened"),
+      elem = $("html");
+
+    if (this.get("composeState") === FULLSCREEN) {
+      elem.addClass("fullscreen-composer");
+    } else {
+      elem.removeClass("fullscreen-composer");
+    }
 
     if (this.get("composeState") === OPEN) {
       this.set("composerOpened", oldOpen || new Date());
     } else {
       if (oldOpen) {
-        var oldTotal = this.get("composerTotalOpened") || 0;
+        let oldTotal = this.get("composerTotalOpened") || 0;
         this.set("composerTotalOpened", oldTotal + (new Date() - oldOpen));
       }
       this.set("composerOpened", null);
@@ -158,9 +174,8 @@ const Composer = RestModel.extend({
   }.observes("composeState"),
 
   composerTime: function() {
-    var total = this.get("composerTotalOpened") || 0;
-
-    var oldOpen = this.get("composerOpened");
+    let total = this.get("composerTotalOpened") || 0,
+      oldOpen = this.get("composerOpened");
     if (oldOpen) {
       total += new Date() - oldOpen;
     }
@@ -170,34 +185,39 @@ const Composer = RestModel.extend({
     .property()
     .volatile(),
 
-  archetype: function() {
-    return this.get("archetypes").findBy("id", this.get("archetypeId"));
-  }.property("archetypeId"),
+  @computed("archetypeId")
+  archetype(archetypeId) {
+    return this.get("archetypes").findBy("id", archetypeId);
+  },
 
   archetypeChanged: function() {
-    return this.set("metaData", Em.Object.create());
+    return this.set("metaData", Ember.Object.create());
   }.observes("archetype"),
 
   // view detected user is typing
   typing: _.throttle(
     function() {
-      var typingTime = this.get("typingTime") || 0;
+      let typingTime = this.get("typingTime") || 0;
       this.set("typingTime", typingTime + 100);
     },
     100,
     { leading: false, trailing: true }
   ),
 
-  editingFirstPost: Em.computed.and("editingPost", "post.firstPost"),
+  editingFirstPost: Ember.computed.and("editingPost", "post.firstPost"),
 
-  canEditTitle: Em.computed.or(
+  canEditTitle: Ember.computed.or(
     "creatingTopic",
     "creatingPrivateMessage",
     "editingFirstPost",
     "creatingSharedDraft"
   ),
 
-  canCategorize: Em.computed.and("canEditTitle", "notCreatingPrivateMessage"),
+  canCategorize: Ember.computed.and(
+    "canEditTitle",
+    "notCreatingPrivateMessage",
+    "notPrivateMessage"
+  ),
 
   @computed("canEditTitle", "creatingPrivateMessage", "categoryId")
   canEditTopicFeaturedLink(canEditTitle, creatingPrivateMessage, categoryId) {
@@ -355,45 +375,31 @@ const Composer = RestModel.extend({
     return (
       canCategorize &&
       !categoryId &&
-      !this.siteSettings.allow_uncategorized_topics &&
-      !this.user.get("admin")
+      !this.siteSettings.allow_uncategorized_topics
     );
   },
 
-  titleLengthValid: function() {
-    if (
-      this.user.get("admin") &&
-      this.get("post.static_doc") &&
-      this.get("titleLength") > 0
-    )
-      return true;
-    if (this.get("titleLength") < this.get("minimumTitleLength")) return false;
-    return this.get("titleLength") <= this.siteSettings.max_topic_title_length;
-  }.property("minimumTitleLength", "titleLength", "post.static_doc"),
-
-  @computed("action")
-  saveIcon(action) {
-    return SAVE_ICONS[action];
+  @computed("minimumTitleLength", "titleLength", "post.static_doc")
+  titleLengthValid(minTitleLength, titleLength, staticDoc) {
+    if (this.user.get("admin") && staticDoc && titleLength > 0) return true;
+    if (titleLength < minTitleLength) return false;
+    return titleLength <= this.siteSettings.max_topic_title_length;
   },
 
-  @computed("action", "whisper")
-  saveLabel(action, whisper) {
-    return whisper ? "composer.create_whisper" : SAVE_LABELS[action];
+  @computed("metaData")
+  hasMetaData(metaData) {
+    return metaData ? Ember.isEmpty(Ember.keys(this.get("metaData"))) : false;
   },
-
-  hasMetaData: function() {
-    const metaData = this.get("metaData");
-    return metaData ? Em.isEmpty(Em.keys(this.get("metaData"))) : false;
-  }.property("metaData"),
 
   /**
     Did the user make changes to the reply?
 
     @property replyDirty
   **/
-  replyDirty: function() {
-    return this.get("reply") !== this.get("originalText");
-  }.property("reply", "originalText"),
+  @computed("reply", "originalText")
+  replyDirty(reply, originalText) {
+    return reply !== originalText;
+  },
 
   /**
     Did the user make changes to the topic title?
@@ -410,9 +416,10 @@ const Composer = RestModel.extend({
 
     @property missingTitleCharacters
   **/
-  missingTitleCharacters: function() {
-    return this.get("minimumTitleLength") - this.get("titleLength");
-  }.property("minimumTitleLength", "titleLength"),
+  @computed("minimumTitleLength", "titleLength")
+  missingTitleCharacters(minimumTitleLength, titleLength) {
+    return minimumTitleLength - titleLength;
+  },
 
   /**
     Minimum number of characters for a title to be valid.
@@ -467,23 +474,25 @@ const Composer = RestModel.extend({
 
     @property titleLength
   **/
-  titleLength: function() {
-    const title = this.get("title") || "";
+  @computed("title")
+  titleLength(title) {
+    title = title || "";
     return title.replace(/\s+/gim, " ").trim().length;
-  }.property("title"),
+  },
 
   /**
     Computes the length of the reply minus the quote(s) and non-significant whitespaces
 
     @property replyLength
   **/
-  replyLength: function() {
-    let reply = this.get("reply") || "";
+  @computed("reply")
+  replyLength(reply) {
+    reply = reply || "";
     while (Quote.REGEXP.test(reply)) {
       reply = reply.replace(Quote.REGEXP, "");
     }
     return reply.replace(/\s+/gim, " ").trim().length;
-  }.property("reply"),
+  },
 
   _setupComposer: function() {
     this.set("archetypeId", this.site.get("default_archetype"));
@@ -582,7 +591,7 @@ const Composer = RestModel.extend({
     if (!opts) opts = {};
     this.set("loading", false);
 
-    const replyBlank = Em.isEmpty(this.get("reply"));
+    const replyBlank = Ember.isEmpty(this.get("reply"));
 
     const composer = this;
     if (
@@ -608,7 +617,8 @@ const Composer = RestModel.extend({
       composerTotalOpened: opts.composerTime,
       typingTime: opts.typingTime,
       whisper: opts.whisper,
-      tags: opts.tags
+      tags: opts.tags,
+      noBump: opts.noBump
     });
 
     if (opts.post) {
@@ -627,7 +637,7 @@ const Composer = RestModel.extend({
 
     this.setProperties({
       archetypeId: opts.archetypeId || this.site.get("default_archetype"),
-      metaData: opts.metaData ? Em.Object.create(opts.metaData) : null,
+      metaData: opts.metaData ? Ember.Object.create(opts.metaData) : null,
       reply: opts.reply || this.get("reply") || ""
     });
 
@@ -666,6 +676,8 @@ const Composer = RestModel.extend({
           originalText: post.get("raw"),
           loading: false
         });
+
+        composer.appEvents.trigger("composer:reply-reloaded", composer);
       });
     } else if (opts.action === REPLY && opts.quote) {
       this.setProperties({
@@ -679,6 +691,10 @@ const Composer = RestModel.extend({
     this.set("originalText", opts.draft ? "" : this.get("reply"));
     if (this.get("editingFirstPost")) {
       this.set("originalTitle", this.get("title"));
+    }
+
+    if (!isEdit(opts.action) || !opts.post) {
+      composer.appEvents.trigger("composer:reply-reloaded", composer);
     }
 
     return false;
@@ -714,7 +730,9 @@ const Composer = RestModel.extend({
       typingTime: 0,
       composerOpened: null,
       composerTotalOpened: 0,
-      featuredLink: null
+      featuredLink: null,
+      noBump: false,
+      editConflict: false
     });
   },
 
@@ -749,6 +767,7 @@ const Composer = RestModel.extend({
 
     const props = {
       raw: this.get("reply"),
+      raw_old: this.get("editConflict") ? null : this.get("originalText"),
       edit_reason: opts.editReason,
       image_sizes: opts.imageSizes,
       cooked: this.getCookedHtml()
@@ -756,9 +775,12 @@ const Composer = RestModel.extend({
 
     this.set("composeState", SAVING);
 
-    let rollback = throwAjaxError(() => {
+    let rollback = throwAjaxError(error => {
       post.set("cooked", oldCooked);
       this.set("composeState", OPEN);
+      if (error.jqXHR && error.jqXHR.status === 409) {
+        this.set("editConflict", true);
+      }
     });
 
     return promise
@@ -952,6 +974,17 @@ const Composer = RestModel.extend({
       if (this.get("replyLength") < this.siteSettings.min_post_length) return;
     }
 
+    this.setProperties({
+      draftSaved: false,
+      draftSaving: true,
+      draftConflictUser: null
+    });
+
+    if (this._clearingStatus) {
+      Ember.run.cancel(this._clearingStatus);
+      this._clearingStatus = null;
+    }
+
     const data = {
       reply: this.get("reply"),
       action: this.get("action"),
@@ -964,25 +997,36 @@ const Composer = RestModel.extend({
       usernames: this.get("targetUsernames"),
       composerTime: this.get("composerTime"),
       typingTime: this.get("typingTime"),
-      tags: this.get("tags")
+      tags: this.get("tags"),
+      noBump: this.get("noBump")
     };
 
-    this.set("draftStatus", I18n.t("composer.saving_draft_tip"));
-
-    const composer = this;
-
-    if (this._clearingStatus) {
-      Em.run.cancel(this._clearingStatus);
-      this._clearingStatus = null;
+    if (this.get("post.id") && !Ember.isEmpty(this.get("originalText"))) {
+      data["originalText"] = this.get("originalText");
     }
 
-    // try to save the draft
     return Draft.save(this.get("draftKey"), this.get("draftSequence"), data)
-      .then(function() {
-        composer.set("draftStatus", I18n.t("composer.saved_draft_tip"));
+      .then(result => {
+        if (result.conflict_user) {
+          this.setProperties({
+            draftSaving: false,
+            draftStatus: I18n.t("composer.edit_conflict"),
+            draftConflictUser: result.conflict_user
+          });
+        } else {
+          this.setProperties({
+            draftSaving: false,
+            draftSaved: true,
+            draftConflictUser: null
+          });
+        }
       })
-      .catch(function() {
-        composer.set("draftStatus", I18n.t("composer.drafts_offline"));
+      .catch(() => {
+        this.setProperties({
+          draftSaving: false,
+          draftStatus: I18n.t("composer.drafts_offline"),
+          draftConflictUser: null
+        });
       });
   },
 
@@ -991,13 +1035,16 @@ const Composer = RestModel.extend({
     const self = this;
 
     if (draftStatus && !this._clearingStatus) {
-      this._clearingStatus = Em.run.later(
+      this._clearingStatus = Ember.run.later(
         this,
         function() {
           self.set("draftStatus", null);
+          self.set("draftConflictUser", null);
           self._clearingStatus = null;
+          self.set("draftSaving", false);
+          self.set("draftSaved", false);
         },
-        1000
+        Ember.Test ? 0 : 1000
       );
     }
   }.observes("title", "reply")
@@ -1036,6 +1083,7 @@ Composer.reopenClass({
   SAVING,
   OPEN,
   DRAFT,
+  FULLSCREEN,
 
   // The actions the composer can take
   CREATE_TOPIC,

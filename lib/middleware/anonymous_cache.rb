@@ -26,6 +26,8 @@ module Middleware
         !@request.xhr? &&
         !@request.path.ends_with?('robots.txt') &&
         !@request.path.ends_with?('srv/status') &&
+        @request[Auth::DefaultCurrentUserProvider::API_KEY].nil? &&
+        @env[Auth::DefaultCurrentUserProvider::USER_API_KEY].nil? &&
         CrawlerDetection.is_blocked_crawler?(@request.env['HTTP_USER_AGENT'])
       end
 
@@ -66,16 +68,16 @@ module Middleware
       end
 
       def cache_key
-        @cache_key ||= "ANON_CACHE_#{@env["HTTP_ACCEPT"]}_#{@env["HTTP_HOST"]}#{@env["REQUEST_URI"]}|m=#{is_mobile?}|c=#{is_crawler?}|b=#{has_brotli?}|t=#{theme_id}"
+        @cache_key ||= "ANON_CACHE_#{@env["HTTP_ACCEPT"]}_#{@env["HTTP_HOST"]}#{@env["REQUEST_URI"]}|m=#{is_mobile?}|c=#{is_crawler?}|b=#{has_brotli?}|t=#{theme_ids.join(",")}"
       end
 
-      def theme_id
+      def theme_ids
         ids, _ = @request.cookies['theme_ids']&.split('|')
         ids = ids&.split(",")&.map(&:to_i)
         if ids && Guardian.new.allow_themes?(ids)
-          ids.first
+          Theme.transform_ids(ids)
         else
-          nil
+          []
         end
       end
 
@@ -199,7 +201,7 @@ module Middleware
 
       if helper.blocked_crawler?
         env["discourse.request_tracker.skip"] = true
-        return [403, {}, "Crawler is not allowed!"]
+        return [403, {}, ["Crawler is not allowed!"]]
       end
 
       if helper.should_force_anonymous?

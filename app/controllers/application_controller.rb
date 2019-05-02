@@ -22,7 +22,7 @@ class ApplicationController < ActionController::Base
   include GlobalPath
   include Hijack
 
-  attr_reader :theme_id
+  attr_reader :theme_ids
 
   serialization_scope :guardian
 
@@ -62,8 +62,8 @@ class ApplicationController < ActionController::Base
     after_action :remember_theme_id
 
     def remember_theme_id
-      if @theme_id
-        Stylesheet::Watcher.theme_id = @theme_id if defined? Stylesheet::Watcher
+      if @theme_ids.present?
+        Stylesheet::Watcher.theme_id = @theme_ids.first if defined? Stylesheet::Watcher
       end
     end
   end
@@ -101,10 +101,6 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  def slow_platform?
-    request.user_agent =~ /Android/
-  end
-
   def set_layout
     use_crawler_layout? ? 'crawler' : 'application'
   end
@@ -129,6 +125,14 @@ class ApplicationController < ActionController::Base
     )
   end
 
+  rescue_from ActiveRecord::RecordInvalid do |e|
+    if request.format && request.format.json?
+      render_json_error e, type: :record_invalid, status: 422
+    else
+      raise e
+    end
+  end
+
   # If they hit the rate limiter
   rescue_from RateLimiter::LimitExceeded do |e|
     render_rate_limit_error(e)
@@ -145,6 +149,14 @@ class ApplicationController < ActionController::Base
       rescue_discourse_actions(:not_logged_in, 403, include_ember: true)
     else
       rescue_discourse_actions(:not_found, 404)
+    end
+  end
+
+  rescue_from ArgumentError do |e|
+    if e.message == "string contains null byte"
+      raise Discourse::InvalidParameters, e.message
+    else
+      raise e
     end
   end
 
@@ -173,7 +185,16 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  rescue_from Discourse::NotFound, PluginDisabled, ActionController::RoutingError  do
+  rescue_from Discourse::NotFound do |e|
+    rescue_discourse_actions(
+      :not_found,
+      e.status,
+      check_permalinks: e.check_permalinks,
+      original_path: e.original_path
+    )
+  end
+
+  rescue_from PluginDisabled, ActionController::RoutingError  do
     rescue_discourse_actions(:not_found, 404)
   end
 
@@ -194,18 +215,48 @@ class ApplicationController < ActionController::Base
     render_json_error I18n.t('read_only_mode_enabled'), type: :read_only, status: 503
   end
 
+  rescue_from ActionController::ParameterMissing do |e|
+    render_json_error e.message, status: 400
+  end
+
+  def redirect_with_client_support(url, options)
+    if request.xhr?
+      response.headers['Discourse-Xhr-Redirect'] = 'true'
+      render plain: url
+    else
+      redirect_to url, options
+    end
+  end
+
   def rescue_discourse_actions(type, status_code, opts = nil)
     opts ||= {}
     show_json_errors = (request.format && request.format.json?) ||
                        (request.xhr?) ||
                        ((params[:external_id] || '').ends_with? '.json')
 
+    if type == :not_found && opts[:check_permalinks]
+      url = opts[:original_path] || request.fullpath
+      permalink = Permalink.find_by_url(url)
+
+      # there are some cases where we have a permalink but no url
+      # cause category / topic was deleted
+      if permalink.present? && permalink.target_url
+        # permalink present, redirect to that URL
+        redirect_with_client_support permalink.target_url, status: :moved_permanently
+        return
+      end
+    end
+
     message = opts[:custom_message_translated] || I18n.t(opts[:custom_message] || type)
 
     if show_json_errors
       # HACK: do not use render_json_error for topics#show
       if request.params[:controller] == 'topics' && request.params[:action] == 'show'
-        return render status: status_code, layout: false, plain: (status_code == 404 || status_code == 410) ? build_not_found_page(status_code) : message
+        return render(
+          status: status_code,
+          layout: false,
+          plain: (status_code == 404 || status_code == 410) ? build_not_found_page(status_code) : message
+        )
       end
 
       render_json_error message, type: type, status: status_code
@@ -331,32 +382,37 @@ class ApplicationController < ActionController::Base
     resolve_safe_mode
     return if request.env[NO_CUSTOM]
 
-    theme_id = request[:preview_theme_id]&.to_i
+    theme_ids = []
+
+    if preview_theme_id = request[:preview_theme_id]&.to_i
+      ids = [preview_theme_id]
+      theme_ids = ids if guardian.allow_themes?(ids, include_preview: true)
+    end
 
     user_option = current_user&.user_option
 
-    unless theme_id
+    if theme_ids.blank?
       ids, seq = cookies[:theme_ids]&.split("|")
       ids = ids&.split(",")&.map(&:to_i)
-      if ids && ids.size > 0 && seq && seq.to_i == user_option&.theme_key_seq.to_i
-        theme_id = ids.first
+      if ids.present? && seq && seq.to_i == user_option&.theme_key_seq.to_i
+        theme_ids = ids if guardian.allow_themes?(ids)
       end
     end
 
-    theme_id ||= user_option&.theme_ids&.first
-
-    if theme_id && !guardian.allow_themes?(theme_id)
-      theme_id = nil
+    if theme_ids.blank?
+      ids = user_option&.theme_ids || []
+      theme_ids = ids if guardian.allow_themes?(ids)
     end
 
-    theme_id ||= SiteSetting.default_theme_id
-    theme_id = nil if theme_id.blank? || theme_id == -1
+    if theme_ids.blank? && SiteSetting.default_theme_id != -1
+      theme_ids << SiteSetting.default_theme_id
+    end
 
-    @theme_id = request.env[:resolved_theme_id] = theme_id
+    @theme_ids = request.env[:resolved_theme_ids] = theme_ids
   end
 
   def guardian
-    @guardian ||= Guardian.new(current_user)
+    @guardian ||= Guardian.new(current_user, request)
   end
 
   def current_homepage
@@ -398,7 +454,7 @@ class ApplicationController < ActionController::Base
   end
 
   def can_cache_content?
-    current_user.blank? && flash[:authentication_data].blank?
+    current_user.blank? && cookies[:authentication_data].blank?
   end
 
   # Our custom cache method
@@ -439,27 +495,15 @@ class ApplicationController < ActionController::Base
     request.session_options[:skip] = true
   end
 
-  def permalink_redirect_or_not_found
-    url = request.fullpath
-    permalink = Permalink.find_by_url(url)
-
-    if permalink.present?
-      # permalink present, redirect to that URL
-      if permalink.external_url
-        redirect_to permalink.external_url, status: :moved_permanently
-      elsif permalink.target_url
-        redirect_to "#{Discourse::base_uri}#{permalink.target_url}", status: :moved_permanently
-      else
-        raise Discourse::NotFound
-      end
-    else
-      # redirect to 404
-      raise Discourse::NotFound
-    end
-  end
-
   def secure_session
     SecureSession.new(session["secure_session_id"] ||= SecureRandom.hex)
+  end
+
+  def handle_permalink(path)
+    permalink = Permalink.find_by_url(path)
+    if permalink && permalink.target_url
+      redirect_to permalink.target_url, status: :moved_permanently
+    end
   end
 
   private
@@ -502,10 +546,10 @@ class ApplicationController < ActionController::Base
     target = view_context.mobile_view? ? :mobile : :desktop
 
     data =
-      if @theme_id
+      if @theme_ids.present?
         {
-         top: Theme.lookup_field(@theme_id, target, "after_header"),
-         footer: Theme.lookup_field(@theme_id, target, "footer")
+         top: Theme.lookup_field(@theme_ids, target, "after_header"),
+         footer: Theme.lookup_field(@theme_ids, target, "footer")
         }
       else
         {}
@@ -556,7 +600,16 @@ class ApplicationController < ActionController::Base
     opts = { status: opts } if opts.is_a?(Integer)
     opts.fetch(:headers, {}).each { |name, value| headers[name.to_s] = value }
 
-    render json: MultiJson.dump(create_errors_json(obj, opts)), status: opts[:status] || 422
+    render(
+      json: MultiJson.dump(create_errors_json(obj, opts)),
+      status: opts[:status] || status_code(obj)
+    )
+  end
+
+  def status_code(obj)
+    return 403 if obj.try(:forbidden)
+    return 404 if obj.try(:not_found)
+    422
   end
 
   def success_json
@@ -648,10 +701,34 @@ class ApplicationController < ActionController::Base
   end
 
   def redirect_to_login_if_required
-    return if current_user || (request.format.json? && is_api?)
+    return if request.format.json? && is_api?
 
-    if SiteSetting.login_required?
+    # Used by clients authenticated via user API.
+    # Redirects to provided URL scheme if
+    # - request uses a valid public key and auth_redirect scheme
+    # - one_time_password scope is allowed
+    if !current_user &&
+      params.has_key?(:user_api_public_key) &&
+      params.has_key?(:auth_redirect)
+      begin
+        OpenSSL::PKey::RSA.new(params[:user_api_public_key])
+      rescue OpenSSL::PKey::RSAError
+        return render plain: I18n.t("user_api_key.invalid_public_key")
+      end
+
+      if UserApiKey.invalid_auth_redirect?(params[:auth_redirect])
+        return render plain: I18n.t("user_api_key.invalid_auth_redirect")
+      end
+
+      if UserApiKey.allowed_scopes.superset?(Set.new(["one_time_password"]))
+        redirect_to("#{params[:auth_redirect]}?otp=true")
+        return
+      end
+    end
+
+    if !current_user && SiteSetting.login_required?
       flash.keep
+      dont_cache_page
 
       if SiteSetting.enable_sso?
         # save original URL in a session so we can redirect after login
@@ -663,6 +740,18 @@ class ApplicationController < ActionController::Base
         # save original URL in a cookie (javascript redirects after login in this case)
         cookies[:destination_url] = destination_url
         redirect_to path("/login")
+      end
+    end
+
+    if current_user &&
+      !current_user.totp_enabled? &&
+      !request.format.json? &&
+      !is_api? &&
+      ((SiteSetting.enforce_second_factor == 'staff' && current_user.staff?) ||
+        SiteSetting.enforce_second_factor == 'all')
+      redirect_path = "#{GlobalSetting.relative_url_root}/u/#{current_user.username}/preferences/second-factor"
+      if !request.fullpath.start_with?(redirect_path)
+        redirect_to path(redirect_path)
       end
     end
   end
@@ -678,14 +767,23 @@ class ApplicationController < ActionController::Base
       layout = 'application' if layout == 'no_ember'
     end
 
-    category_topic_ids = Category.pluck(:topic_id).compact
+    if !SiteSetting.login_required? || current_user
+      key = "page_not_found_topics"
+      if @topics_partial = $redis.get(key)
+        @topics_partial = @topics_partial.html_safe
+      else
+        category_topic_ids = Category.pluck(:topic_id).compact
+        @top_viewed = TopicQuery.new(nil, except_topic_ids: category_topic_ids).list_top_for("monthly").topics.first(10)
+        @recent = Topic.includes(:category).where.not(id: category_topic_ids).recent(10)
+        @topics_partial = render_to_string partial: '/exceptions/not_found_topics', formats: [:html]
+        $redis.setex(key, 10.minutes, @topics_partial)
+      end
+    end
+
     @container_class = "wrap not-found-container"
-    @top_viewed = TopicQuery.new(nil, except_topic_ids: category_topic_ids).list_top_for("monthly").topics.first(10)
-    @recent = Topic.includes(:category).where.not(id: category_topic_ids).recent(10)
-    @slug =  params[:slug].class == String ? params[:slug] : ''
-    @slug =  (params[:id].class == String ? params[:id] : '') if @slug.blank?
+    @slug = params[:slug].presence || params[:id].presence || ""
     @slug.tr!('-', ' ')
-    @hide_google = true if SiteSetting.login_required
+    @hide_search = true if SiteSetting.login_required
     render_to_string status: status, layout: layout, formats: [:html], template: '/exceptions/not_found'
   end
 
@@ -695,7 +793,7 @@ class ApplicationController < ActionController::Base
 
   protected
 
-  def render_post_json(post, add_raw = true)
+  def render_post_json(post, add_raw: true)
     post_serializer = PostSerializer.new(post, scope: guardian, root: false)
     post_serializer.add_raw = add_raw
 

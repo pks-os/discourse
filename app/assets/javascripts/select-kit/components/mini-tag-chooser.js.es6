@@ -1,11 +1,12 @@
 import ComboBox from "select-kit/components/combo-box";
-import Tags from "select-kit/mixins/tags";
+import TagsMixin from "select-kit/mixins/tags";
 import { default as computed } from "ember-addons/ember-computed-decorators";
 import renderTag from "discourse/lib/render-tag";
 import { escapeExpression } from "discourse/lib/utilities";
+import { iconHTML } from "discourse-common/lib/icon-library";
 const { get, isEmpty, run, makeArray } = Ember;
 
-export default ComboBox.extend(Tags, {
+export default ComboBox.extend(TagsMixin, {
   allowContentReplacement: true,
   headerComponent: "mini-tag-chooser/mini-tag-chooser-header",
   pluginApiIdentifiers: ["mini-tag-chooser"],
@@ -15,7 +16,8 @@ export default ComboBox.extend(Tags, {
   verticalOffset: 3,
   filterable: true,
   noTags: Ember.computed.empty("selection"),
-  allowAny: true,
+  allowCreate: null,
+  allowAny: Ember.computed.alias("allowCreate"),
   caretUpIcon: Ember.computed.alias("caretIcon"),
   caretDownIcon: Ember.computed.alias("caretIcon"),
   isAsync: true,
@@ -26,6 +28,10 @@ export default ComboBox.extend(Tags, {
 
     this.set("termMatchesForbidden", false);
     this.selectionSelector = ".selected-tag";
+
+    if (this.get("allowCreate") !== false) {
+      this.set("allowCreate", this.site.get("can_create_tag"));
+    }
 
     this.set("templateForRow", rowComponent => {
       const tag = rowComponent.get("computedContent");
@@ -45,24 +51,29 @@ export default ComboBox.extend(Tags, {
     );
   },
 
-  willDestroyElement() {
-    this._super(...arguments);
-
-    this.$(".selected-name").off("touchend.select-kit pointerup.select-kit");
-  },
-
   didInsertElement() {
     this._super(...arguments);
 
-    this.$(".selected-name").on(
-      "touchend.select-kit pointerup.select-kit",
-      () => this.focusFilterOrHeader()
+    this.$(".select-kit-body").on(
+      "mousedown touchstart",
+      ".selected-tag",
+      event => {
+        const $button = $(event.target).closest(".selected-tag");
+        this._destroyEvent(event);
+        this.destroyTags(this.computeContentItem($button.attr("data-value")));
+      }
     );
+  },
+
+  willDestroyElement() {
+    this._super(...arguments);
+
+    this.$(".select-kit-body").off("mousedown touchstart");
   },
 
   @computed("hasReachedMaximum")
   caretIcon(hasReachedMaximum) {
-    return hasReachedMaximum ? null : "plus fa-fw";
+    return hasReachedMaximum ? null : "plus";
   },
 
   @computed("tags")
@@ -72,37 +83,6 @@ export default ComboBox.extend(Tags, {
 
   filterComputedContent(computedContent) {
     return computedContent;
-  },
-
-  didRender() {
-    this._super();
-
-    this.$(".select-kit-body").on(
-      "click.mini-tag-chooser",
-      ".selected-tag",
-      event => {
-        event.stopImmediatePropagation();
-        this.destroyTags(
-          this.computeContentItem($(event.target).attr("data-value"))
-        );
-      }
-    );
-
-    this.$(".select-kit-header").on(
-      "focus.mini-tag-chooser",
-      ".selected-name",
-      event => {
-        event.stopImmediatePropagation();
-        this.focus(event);
-      }
-    );
-  },
-
-  willDestroyElement() {
-    this._super();
-
-    this.$(".select-kit-body").off("click.mini-tag-chooser");
-    this.$(".select-kit-header").off("focus.mini-tag-chooser");
   },
 
   // we are directly mutatings tags to define the current selection
@@ -151,7 +131,7 @@ export default ComboBox.extend(Tags, {
           <button aria-label="${tag}" title="${tag}" class="selected-tag ${
           isHighlighted ? "is-highlighted" : ""
         }" data-value="${tag}">
-            ${tag}
+            ${tag} ${iconHTML("times")}
           </button>
         `;
       });
@@ -161,7 +141,7 @@ export default ComboBox.extend(Tags, {
   },
 
   computeHeaderContent() {
-    let content = this._super();
+    let content = this._super(...arguments);
 
     const joinedTags = this.get("selection")
       .map(s => Ember.get(s, "value"))
@@ -207,6 +187,7 @@ export default ComboBox.extend(Tags, {
     let results = json.results;
 
     context.set("termMatchesForbidden", json.forbidden ? true : false);
+    context.set("termMatchErrorMessage", json.forbidden_message);
 
     if (context.get("siteSettings.tags_sort_alphabetically")) {
       results = results.sort((a, b) => a.id > b.id);
@@ -217,12 +198,6 @@ export default ComboBox.extend(Tags, {
     results = results.map(result => {
       return { id: result.text, name: result.text, count: result.count };
     });
-
-    // if forbidden we probably have an existing tag which is not in the list of
-    // returned tags, so we manually add it at the top
-    if (json.forbidden) {
-      results.unshift({ id: json.forbidden, name: json.forbidden, count: 0 });
-    }
 
     return results;
   },
@@ -235,6 +210,7 @@ export default ComboBox.extend(Tags, {
     // TODO: FIX buffered-proxy.js to support arrays
     this.get("tags").removeObjects(tags);
     this.set("tags", this.get("tags").slice(0));
+    this._tagsChanged();
 
     this.set(
       "searchDebounce",
@@ -246,9 +222,17 @@ export default ComboBox.extend(Tags, {
     this.destroyTags(tags);
   },
 
+  _tagsChanged() {
+    if (this.attrs.onChangeTags) {
+      this.attrs.onChangeTags({ target: { value: this.get("tags") } });
+    }
+  },
+
   actions: {
     onSelect(tag) {
       this.set("tags", makeArray(this.get("tags")).concat(tag));
+      this._tagsChanged();
+
       this._prepareSearch(this.get("filter"));
       this.autoHighlight();
     },

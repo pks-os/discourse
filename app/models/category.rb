@@ -3,11 +3,16 @@
 require_dependency 'distributed_cache'
 
 class Category < ActiveRecord::Base
+  self.ignored_columns = %w{
+    uploaded_meta_id
+  }
+
   include Searchable
   include Positionable
   include HasCustomFields
   include CategoryHashtag
   include AnonCacheInvalidator
+  include HasDestroyedWebHook
 
   REQUIRE_TOPIC_APPROVAL = 'require_topic_approval'
   REQUIRE_REPLY_APPROVAL = 'require_reply_approval'
@@ -39,16 +44,21 @@ class Category < ActiveRecord::Base
   has_and_belongs_to_many :web_hooks
 
   validates :user_id, presence: true
+
   validates :name, if: Proc.new { |c| c.new_record? || c.will_save_change_to_name? },
                    presence: true,
                    uniqueness: { scope: :parent_category_id, case_sensitive: false },
                    length: { in: 1..50 }
+
   validates :num_featured_topics, numericality: { only_integer: true, greater_than: 0 }
+  validates :search_priority, inclusion: { in: Searchable::PRIORITIES.values }
+
   validate :parent_category_validator
-
   validate :email_in_validator
-
   validate :ensure_slug
+  validate :permissions_compatibility_validator
+
+  validates :auto_close_hours, numericality: { greater_than: 0, less_than_or_equal_to: 87600 }, allow_nil: true
 
   after_create :create_category_definition
 
@@ -61,6 +71,7 @@ class Category < ActiveRecord::Base
   after_save :reset_topic_ids_cache
   after_save :clear_url_cache
   after_save :index_search
+  after_save :update_reviewables
 
   after_destroy :reset_topic_ids_cache
   after_destroy :publish_category_deletion
@@ -82,6 +93,7 @@ class Category < ActiveRecord::Base
   has_many :tags, through: :category_tags
   has_many :category_tag_groups, dependent: :destroy
   has_many :tag_groups, through: :category_tag_groups
+  belongs_to :reviewable_by_group, class_name: 'Group'
 
   scope :latest, -> { order('topic_count DESC') }
 
@@ -105,6 +117,9 @@ class Category < ActiveRecord::Base
   # permission is just used by serialization
   # we may consider wrapping this in another spot
   attr_accessor :displayable_topics, :permission, :subcategory_ids, :notification_level, :has_children
+
+  # Allows us to skip creating the category definition topic in tests.
+  attr_accessor :skip_category_definition
 
   @topic_id_cache = DistributedCache.new('category_topic_ids')
 
@@ -205,6 +220,8 @@ class Category < ActiveRecord::Base
   end
 
   def create_category_definition
+    return if skip_category_definition
+
     t = Topic.new(title: I18n.t("category.topic_prefix", category: name), user: user, pinned_at: Time.now, category_id: id)
     t.skip_callbacks = true
     t.ignore_category_auto_close = true
@@ -475,6 +492,10 @@ class Category < ActiveRecord::Base
     self.name_lower = name.downcase if self.name
   end
 
+  def visible_group_names(user)
+    self.groups.visible_groups(user)
+  end
+
   def secure_group_ids
     if self.read_restricted?
       groups.pluck("groups.id")
@@ -499,7 +520,7 @@ class Category < ActiveRecord::Base
       .pluck("topics.id")
       .first
 
-    self.update_attributes(latest_topic_id: latest_topic_id, latest_post_id: latest_post_id)
+    self.update(latest_topic_id: latest_topic_id, latest_post_id: latest_post_id)
   end
 
   def self.query_parent_category(parent_slug)
@@ -532,7 +553,8 @@ class Category < ActiveRecord::Base
   end
 
   def full_slug(separator = "-")
-    url[3..-1].gsub("/", separator)
+    start_idx = "#{Discourse.base_uri}/c/".length
+    url[start_idx..-1].gsub("/", separator)
   end
 
   def url
@@ -563,11 +585,10 @@ class Category < ActiveRecord::Base
 
   def create_category_permalink
     old_slug = saved_changes.transform_values(&:first)["slug"]
-    if self.parent_category
-      url = "c/#{self.parent_category.slug}/#{old_slug}"
-    else
-      url = "c/#{old_slug}"
-    end
+    url = +"#{Discourse.base_uri}/c"
+    url << "/#{parent_category.slug}" if parent_category_id
+    url << "/#{old_slug}"
+    url = Permalink.normalize_url(url)
 
     if Permalink.where(url: url).exists?
       Permalink.where(url: url).update_all(category_id: id)
@@ -593,6 +614,12 @@ class Category < ActiveRecord::Base
     SearchIndexer.index(self)
   end
 
+  def update_reviewables
+    if SiteSetting.enable_category_group_review? && saved_change_to_reviewable_by_group_id?
+      Reviewable.where(category_id: id).update_all(reviewable_by_group_id: reviewable_by_group_id)
+    end
+  end
+
   def self.find_by_slug(category_slug, parent_category_slug = nil)
     if parent_category_slug
       parent_category_id = self.where(slug: parent_category_slug, parent_category_id: nil).pluck(:id).first
@@ -616,6 +643,49 @@ class Category < ActiveRecord::Base
       true
     end
   end
+
+  def permissions_compatibility_validator
+    # when saving subcategories
+    if @permissions && parent_category_id.present?
+      return if parent_category.category_groups.empty?
+
+      parent_permissions = parent_category.category_groups.pluck(:group_id, :permission_type)
+      child_permissions = @permissions.empty? ? [[Group[:everyone].id, CategoryGroup.permission_types[:full]]] : @permissions
+      check_permissions_compatibility(parent_permissions, child_permissions)
+
+    # when saving parent category
+    elsif @permissions && subcategories.present?
+      return if @permissions.empty?
+
+      parent_permissions = @permissions
+      child_permissions = subcategories_permissions.uniq
+
+      check_permissions_compatibility(parent_permissions, child_permissions)
+    end
+  end
+
+  private
+
+  def check_permissions_compatibility(parent_permissions, child_permissions)
+    parent_groups = parent_permissions.map(&:first)
+
+    return if parent_groups.include?(Group[:everyone].id)
+
+    child_groups = child_permissions.map(&:first)
+    only_subcategory_groups = child_groups - parent_groups
+
+    if only_subcategory_groups.present?
+      group_names = Group.where(id: only_subcategory_groups).pluck(:name).join(", ")
+      errors.add(:base, I18n.t("category.errors.permission_conflict", group_names: group_names))
+    end
+  end
+
+  def subcategories_permissions
+    CategoryGroup.joins(:category)
+      .where(['categories.parent_category_id = ?', self.id])
+      .pluck(:group_id, :permission_type)
+      .uniq
+  end
 end
 
 # == Schema Information
@@ -624,7 +694,7 @@ end
 #
 #  id                                :integer          not null, primary key
 #  name                              :string(50)       not null
-#  color                             :string(6)        default("AB9364"), not null
+#  color                             :string(6)        default("0088CC"), not null
 #  topic_id                          :integer
 #  topic_count                       :integer          default(0), not null
 #  created_at                        :datetime         not null
@@ -668,12 +738,15 @@ end
 #  default_top_period                :string(20)       default("all")
 #  mailinglist_mirror                :boolean          default(FALSE), not null
 #  suppress_from_latest              :boolean          default(FALSE)
-#  minimum_required_tags             :integer          default(0)
+#  minimum_required_tags             :integer          default(0), not null
 #  navigate_to_first_post_after_read :boolean          default(FALSE), not null
+#  search_priority                   :integer          default(0)
+#  allow_global_tags                 :boolean          default(FALSE), not null
 #
 # Indexes
 #
-#  index_categories_on_email_in     (email_in) UNIQUE
-#  index_categories_on_topic_count  (topic_count)
-#  unique_index_categories_on_name  (COALESCE(parent_category_id, '-1'::integer), name) UNIQUE
+#  index_categories_on_email_in         (email_in) UNIQUE
+#  index_categories_on_search_priority  (search_priority)
+#  index_categories_on_topic_count      (topic_count)
+#  unique_index_categories_on_name      (COALESCE(parent_category_id, '-1'::integer), name) UNIQUE
 #

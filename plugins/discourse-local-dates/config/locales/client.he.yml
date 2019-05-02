@@ -10,6 +10,10 @@ he:
     discourse_local_dates:
       create:
         form:
+          insert: כתיבה
+          advanced_mode: מצב מורחב
           format_description: "תבנית להצגת תאריך המשתמש. יש להשתמש ב־„‎\\T\\Z” כדי להציג את אזור הזמן של המשתמש במילים (אסיה/ירושלים)"
           timezones_title: אזורי זמן
           timezones_description: באזורי זמן נעשה שימוש לטובת הצגת תאריך בתצוגה מקדימה וכבררת מחדל.
+          date_title: תאריך
+          time_title: זמן

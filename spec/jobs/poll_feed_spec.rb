@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 require_dependency 'jobs/regular/process_post'
 
@@ -6,7 +8,6 @@ describe Jobs::PollFeed do
 
   context "execute" do
     let(:url) { "http://eviltrout.com" }
-    let(:embed_by_username) { "eviltrout" }
 
     before do
       $redis.del("feed-polled-recently")
@@ -90,7 +91,6 @@ describe Jobs::PollFeed do
             expect { poller.poll_feed }.to_not change { Topic.count }
 
             post.reload
-            expect(post.topic.title).to eq('Poll Feed Spec Fixture')
             expect(post.raw).to include('<p>This is the body &amp; content. </p>')
             expect(post.user).to eq(feed_author)
           end
@@ -135,6 +135,17 @@ describe Jobs::PollFeed do
       end
 
       include_examples 'topic creation based on the the feed'
+    end
+
+    it "aborts when it can't fetch the feed" do
+      SiteSetting.feed_polling_enabled = true
+      SiteSetting.feed_polling_url = 'https://blog.discourse.org/feed/atom/'
+      SiteSetting.embed_by_username = 'eviltrout'
+
+      stub_request(:head, SiteSetting.feed_polling_url).to_return(status: 404)
+      stub_request(:get, SiteSetting.feed_polling_url).to_return(status: 404)
+
+      expect { poller.poll_feed }.to_not change { Topic.count }
     end
 
     context 'encodings' do

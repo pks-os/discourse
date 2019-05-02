@@ -132,13 +132,15 @@ module DiscourseNarrativeBot
     def init_tutorial_recover
       data = get_data(@user)
 
-      post = PostCreator.create!(@user,         raw: I18n.t(
+      post = PostCreator.create!(@user,
+        raw: I18n.t(
           "#{I18N_KEY}.recover.deleted_post_raw",
           i18n_post_args(discobot_username: self.discobot_user.username)
         ),
-                                                topic_id: data[:topic_id],
-                                                skip_bot: true,
-                                                skip_validations: true)
+        topic_id: data[:topic_id],
+        skip_bot: true,
+        skip_validations: true
+      )
 
       set_state_data(:post_id, post.id)
 
@@ -147,14 +149,8 @@ module DiscourseNarrativeBot
       if SiteSetting.delete_removed_posts_after < 1
         opts[:delete_removed_posts_after] = 1
 
-        # Flag it and defer so the stub doesn't get destroyed
-        flag = PostAction.create!(
-          user: self.discobot_user,
-          post: post, post_action_type_id:
-          PostActionType.types[:off_topic]
-        )
-
-        PostAction.defer_flags!(post, self.discobot_user)
+        result = PostActionCreator.notify_moderators(self.discobot_user, post)
+        result.reviewable.perform(self.discobot_user, :ignore)
       end
 
       PostDestroyer.new(@user, post, opts).destroy
@@ -253,7 +249,7 @@ module DiscourseNarrativeBot
       fake_delay
 
       raw = <<~RAW
-      #{I18n.t("#{I18N_KEY}.recover.reply", i18n_post_args)}
+      #{I18n.t("#{I18N_KEY}.recover.reply", i18n_post_args(deletion_after: SiteSetting.delete_removed_posts_after))}
 
       #{instance_eval(&@next_instructions)}
       RAW

@@ -2,7 +2,10 @@ import SelectKitComponent from "select-kit/components/select-kit";
 import computed from "ember-addons/ember-computed-decorators";
 import { on } from "ember-addons/ember-computed-decorators";
 const { get, isNone, isEmpty, makeArray, run } = Ember;
-import { applyOnSelectPluginApiCallbacks } from "select-kit/mixins/plugin-api";
+import {
+  applyOnSelectPluginApiCallbacks,
+  applyOnSelectNonePluginApiCallbacks
+} from "select-kit/mixins/plugin-api";
 
 export default SelectKitComponent.extend({
   pluginApiIdentifiers: ["multi-select"],
@@ -20,7 +23,7 @@ export default SelectKitComponent.extend({
   values: null,
 
   init() {
-    this._super();
+    this._super(...arguments);
 
     this.set("computedValues", []);
 
@@ -28,18 +31,17 @@ export default SelectKitComponent.extend({
       this.set("values", []);
     }
 
-    this.set(
-      "headerComponentOptions",
-      Ember.Object.create({
-        selectedNameComponent: this.get("selectedNameComponent")
-      })
-    );
+    this.get("headerComponentOptions").setProperties({
+      selectedNameComponent: this.get("selectedNameComponent")
+    });
   },
 
   @on("didRender")
   _setChoicesMaxWidth() {
     const width = this.$body().outerWidth(false);
-    this.$(".choices").css({ maxWidth: width, width });
+    if (width > 0) {
+      this.$(".choices").css({ maxWidth: width });
+    }
   },
 
   @on("didReceiveAttrs")
@@ -112,6 +114,11 @@ export default SelectKitComponent.extend({
     this.set("values", computedValues);
   },
   mutateContent() {},
+
+  forceValues(values) {
+    this.mutateValues(values);
+    this._compute();
+  },
 
   filterComputedContent(computedContent, computedValues, filter) {
     return computedContent.filter(c => {
@@ -253,7 +260,23 @@ export default SelectKitComponent.extend({
       !computedContentItem ||
       computedContentItem.__sk_row_type === "noneRow"
     ) {
+      applyOnSelectNonePluginApiCallbacks(
+        this.get("pluginApiIdentifiers"),
+        this
+      );
+      this._boundaryActionHandler("onSelectNone");
       this.clearSelection();
+      return;
+    }
+
+    if (computedContentItem.__sk_row_type === "noopRow") {
+      applyOnSelectPluginApiCallbacks(
+        this.get("pluginApiIdentifiers"),
+        computedContentItem.value,
+        this
+      );
+
+      this._boundaryActionHandler("onSelect", computedContentItem.value);
       return;
     }
 
@@ -308,20 +331,31 @@ export default SelectKitComponent.extend({
 
   deselect(rowComputedContentItems) {
     this.willDeselect(rowComputedContentItems);
+
     rowComputedContentItems = makeArray(rowComputedContentItems);
     const generatedComputedContents = this._filterRemovableComputedContents(
       makeArray(rowComputedContentItems)
     );
-    this.set("highlighted", null);
-    this.set("highlightedSelection", []);
+    this.setProperties({ highlighted: null, highlightedSelection: [] });
     this.get("computedValues").removeObjects(
       rowComputedContentItems.map(r => r.value)
     );
-    this.get("computedContent").removeObjects(generatedComputedContents);
-    run.next(() => this.mutateAttributes());
-    run.schedule("afterRender", () => {
-      this.didDeselect(rowComputedContentItems);
-      this.autoHighlight();
+    this.get("computedContent").removeObjects([
+      ...rowComputedContentItems,
+      ...generatedComputedContents
+    ]);
+
+    run.next(() => {
+      this.mutateAttributes();
+
+      run.schedule("afterRender", () => {
+        this.didDeselect(rowComputedContentItems);
+        this.autoHighlight();
+
+        if (!this.isDestroying && !this.isDestroyed) {
+          this._positionWrapper();
+        }
+      });
     });
   },
 

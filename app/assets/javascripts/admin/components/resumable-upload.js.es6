@@ -1,5 +1,6 @@
 import { iconHTML } from "discourse-common/lib/icon-library";
 import { bufferedRender } from "discourse-common/lib/buffered-render";
+import computed from "ember-addons/ember-computed-decorators";
 
 /*global Resumable:true */
 
@@ -8,8 +9,8 @@ import { bufferedRender } from "discourse-common/lib/buffered-render";
 
     {{resumable-upload
         target="/admin/backups/upload"
-        success="successAction"
-        error="errorAction"
+        success=(action "successAction")
+        error=(action "errorAction")
         uploadText="UPLOAD"
     }}
 **/
@@ -27,18 +28,19 @@ export default Ember.Component.extend(
 
     rerenderTriggers: ["isUploading", "progress"],
 
-    translatedTitle: function() {
-      const title = this.get("title");
-      return title ? I18n.t(title) : this.get("text");
-    }.property("title", "text"),
+    @computed("title", "text")
+    translatedTitle(title, text) {
+      return title ? I18n.t(title) : text;
+    },
 
-    text: function() {
-      if (this.get("isUploading")) {
-        return this.get("progress") + " %";
+    @computed("isUploading", "progress")
+    text(isUploading, progress) {
+      if (isUploading) {
+        return progress + " %";
       } else {
         return this.get("uploadText");
       }
-    }.property("isUploading", "progress"),
+    },
 
     buildBuffer(buffer) {
       const icon = this.get("isUploading") ? "times" : "upload";
@@ -55,7 +57,7 @@ export default Ember.Component.extend(
       if (this.get("isUploading")) {
         this.resumable.cancel();
         var self = this;
-        Em.run.later(function() {
+        Ember.run.later(function() {
           self._reset();
         });
         return false;
@@ -83,40 +85,40 @@ export default Ember.Component.extend(
         // automatically upload the selected file
         self.resumable.upload();
         // mark as uploading
-        Em.run.later(function() {
+        Ember.run.later(function() {
           self.set("isUploading", true);
         });
       });
 
       this.resumable.on("fileProgress", function(file) {
         // update progress
-        Em.run.later(function() {
+        Ember.run.later(function() {
           self.set("progress", parseInt(file.progress() * 100, 10));
         });
       });
 
       this.resumable.on("fileSuccess", function(file) {
-        Em.run.later(function() {
+        Ember.run.later(function() {
           // mark as not uploading anymore
           self._reset();
           // fire an event to allow the parent route to reload its model
-          self.sendAction("success", file.fileName);
+          self.success(file.fileName);
         });
       });
 
       this.resumable.on("fileError", function(file, message) {
-        Em.run.later(function() {
+        Ember.run.later(function() {
           // mark as not uploading anymore
           self._reset();
           // fire an event to allow the parent route to display the error message
-          self.sendAction("error", file.fileName, message);
+          self.error(file.fileName, message);
         });
       });
     }.on("init"),
 
     _assignBrowse: function() {
       var self = this;
-      Em.run.schedule("afterRender", function() {
+      Ember.run.schedule("afterRender", function() {
         self.resumable.assignBrowse(self.$());
       });
     }.on("didInsertElement"),

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Helpers
   extend ActiveSupport::Concern
 
@@ -14,6 +16,11 @@ module Helpers
   def log_in_user(user)
     provider = Discourse.current_user_provider.new(request.env)
     provider.log_on_user(user, session, cookies)
+    provider
+  end
+
+  def log_out_user(provider)
+    provider.log_off_user(session, cookies)
   end
 
   def fixture_file(filename)
@@ -58,7 +65,7 @@ module Helpers
   def stub_guardian(user)
     guardian = Guardian.new(user)
     yield(guardian) if block_given?
-    Guardian.stubs(new: guardian).with(user)
+    Guardian.stubs(new: guardian).with(user, anything)
   end
 
   def wait_for(on_fail: nil, &blk)
@@ -101,5 +108,15 @@ module Helpers
     tag_names.each do |name|
       tag_group.tags << (Tag.where(name: name).first || Fabricate(:tag, name: name))
     end
+  end
+
+  def capture_stdout
+    old_stdout = $stdout
+    io = StringIO.new
+    $stdout = io
+    yield
+    io.string
+  ensure
+    $stdout = old_stdout
   end
 end

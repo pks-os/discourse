@@ -1,11 +1,17 @@
+import deprecated from "discourse-common/lib/deprecated";
 import { escapeExpression } from "discourse/lib/utilities";
 
-export function showTooltip() {
-  const fadeSpeed = 300;
-  const tooltipID = "#discourse-tooltip";
-  const $this = $(this);
-  const $parent = $this.offsetParent();
-  const content = escapeExpression($this.attr("data-tooltip"));
+const fadeSpeed = 300;
+const tooltipID = "#discourse-tooltip";
+
+export function showTooltip(e) {
+  const $this = $(e.currentTarget),
+    $parent = $this.offsetParent();
+  // html tooltip are risky try your best to sanitize anything
+  // displayed as html to avoid XSS attacks
+  const content = $this.attr("data-tooltip")
+    ? escapeExpression($this.attr("data-tooltip"))
+    : $this.attr("data-html-tooltip") || "";
   const retina =
     window.devicePixelRatio && window.devicePixelRatio > 1
       ? "class='retina'"
@@ -16,11 +22,9 @@ export function showTooltip() {
   pos.top -= delta.top;
   pos.left -= delta.left;
 
-  $(tooltipID)
-    .fadeOut(fadeSpeed)
-    .remove();
+  hideTooltip(tooltipID);
 
-  $(this).after(`
+  $this.after(`
     <div id="discourse-tooltip" ${retina}>
       <div class="tooltip-pointer"></div>
       <div class="tooltip-content">${content}</div>
@@ -67,14 +71,39 @@ export function showTooltip() {
   return false;
 }
 
+export function hideTooltip() {
+  $(tooltipID)
+    .fadeOut(fadeSpeed)
+    .remove();
+}
+
 export function registerTooltip(jqueryContext) {
+  deprecated("tooltip is getting deprecated. Use d-popover instead");
+
   if (jqueryContext.length) {
-    jqueryContext.on("click", showTooltip);
+    jqueryContext.off("click").on("click", event => showTooltip(event));
+  }
+}
+
+export function registerHoverTooltip(jqueryContext) {
+  deprecated("tooltip is getting deprecated. Use d-popover instead");
+
+  if (jqueryContext.length) {
+    jqueryContext
+      .off("mouseenter mouseleave click")
+      .on("mouseenter click", showTooltip)
+      .on("mouseleave", hideTooltip);
   }
 }
 
 export function unregisterTooltip(jqueryContext) {
   if (jqueryContext.length) {
     jqueryContext.off("click");
+  }
+}
+
+export function unregisterHoverTooltip(jqueryContext) {
+  if (jqueryContext.length) {
+    jqueryContext.off("mouseenter mouseleave click");
   }
 }

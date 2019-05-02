@@ -15,11 +15,7 @@ class TopicLinkClick < ActiveRecord::Base
     url = args[:url][0...TopicLink.max_url_length]
     return nil if url.blank?
 
-    uri = begin
-      URI.parse(url)
-    rescue URI::InvalidURIError
-    end
-
+    uri = UrlHelper.relaxed_parse(url)
     urls = Set.new
     urls << url
     if url =~ /^http/
@@ -47,7 +43,7 @@ class TopicLinkClick < ActiveRecord::Base
       if Discourse.asset_host.present?
         cdn_uri = begin
           URI.parse(Discourse.asset_host)
-        rescue URI::InvalidURIError
+        rescue URI::Error
         end
 
         if cdn_uri && cdn_uri.hostname == uri.hostname && uri.path.starts_with?(cdn_uri.path)
@@ -59,7 +55,7 @@ class TopicLinkClick < ActiveRecord::Base
       if SiteSetting.Upload.s3_cdn_url.present?
         cdn_uri = begin
           URI.parse(SiteSetting.Upload.s3_cdn_url)
-        rescue URI::InvalidURIError
+        rescue URI::Error
         end
 
         if cdn_uri && cdn_uri.hostname == uri.hostname && uri.path.starts_with?(cdn_uri.path)

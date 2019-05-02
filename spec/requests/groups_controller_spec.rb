@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe GroupsController do
@@ -48,7 +50,14 @@ describe GroupsController do
         get "/groups.json", params: { filter: 'test' }
 
         expect(response.status).to eq(200)
-        expect(JSON.parse(response.body)["groups"].first["id"]).to eq(other_group.id)
+
+        response_body = JSON.parse(response.body)
+
+        expect(response_body["groups"].first["id"]).to eq(other_group.id)
+
+        expect(response_body["load_more_groups"]).to eq(
+          "/groups?filter=test&page=1"
+        )
       end
     end
 
@@ -72,8 +81,14 @@ describe GroupsController do
             group_ids = [moderator_group_id, group.id, other_group.id]
             group_ids.reverse! if !is_asc
 
-            expect(JSON.parse(response.body)["groups"].map { |group| group["id"] })
+            response_body = JSON.parse(response.body)
+
+            expect(response_body["groups"].map { |group| group["id"] })
               .to eq(group_ids)
+
+            expect(response_body["load_more_groups"]).to eq(
+              "/groups?#{is_asc ? 'asc=true&' : '' }order=name&page=1"
+            )
           end
         end
       end
@@ -85,8 +100,14 @@ describe GroupsController do
 
           expect(response.status).to eq(200)
 
-          expect(JSON.parse(response.body)["groups"].map { |group| group["id"] })
+          response_body = JSON.parse(response.body)
+
+          expect(response_body["groups"].map { |group| group["id"] })
             .to eq([other_group.id, group.id, moderator_group_id])
+
+          expect(response_body["load_more_groups"]).to eq(
+            "/groups?order=name&page=1"
+          )
         end
       end
     end
@@ -341,7 +362,15 @@ describe GroupsController do
     end
 
     it "ensures that membership can be paginated" do
-      5.times { group.add(Fabricate(:user)) }
+
+      freeze_time
+
+      first_user = Fabricate(:user)
+      group.add(first_user)
+
+      freeze_time 1.day.from_now
+
+      4.times { group.add(Fabricate(:user)) }
       usernames = group.users.map { |m| m.username }.sort
 
       get "/groups/#{group.name}/members.json", params: { limit: 3 }
@@ -359,6 +388,11 @@ describe GroupsController do
       members = JSON.parse(response.body)["members"]
 
       expect(members.map { |m| m['username'] }).to eq(usernames[3..5])
+
+      get "/groups/#{group.name}/members.json", params: { order: 'added_at', desc: true }
+      members = JSON.parse(response.body)["members"]
+
+      expect(members.last['added_at']).to eq(first_user.created_at.as_json)
     end
   end
 
@@ -398,7 +432,7 @@ describe GroupsController do
       response_body = JSON.parse(response.body)
       expect(response_body["mentionable"]).to eq(false)
 
-      group.update_attributes!(
+      group.update!(
         mentionable_level: Group::ALIAS_LEVELS[:everyone],
         visibility_level: Group.visibility_levels[:staff]
       )
@@ -529,7 +563,7 @@ describe GroupsController do
 
     context "when user is group admin" do
       before do
-        user.update_attributes!(admin: true)
+        user.update!(admin: true)
         sign_in(user)
       end
 
@@ -692,6 +726,20 @@ describe GroupsController do
         .to contain_exactly(user1.id, user2.id, user3.id)
     end
 
+    it "can show group requests" do
+      sign_in(Fabricate(:admin))
+
+      user4 = Fabricate(:user)
+      request4 = Fabricate(:group_request, user: user4, group: group)
+
+      get "/groups/#{group.name}/members.json", params: { requesters: true }
+
+      members = JSON.parse(response.body)["members"]
+      expect(members.length).to eq(1)
+      expect(members.first["username"]).to eq(user4.username)
+      expect(members.first["reason"]).to eq(request4.reason)
+    end
+
     describe 'filterable' do
       describe 'as a normal user' do
         it "should not allow members to be filterable by email" do
@@ -758,7 +806,7 @@ describe GroupsController do
 
       context 'public group' do
         it 'should be fobidden' do
-          group.update_attributes!(
+          group.update!(
             public_admission: true,
             public_exit: true
           )
@@ -837,12 +885,12 @@ describe GroupsController do
 
       context "is able to add several members to a group" do
         let(:user1) { Fabricate(:user) }
-        let(:user2) { Fabricate(:user) }
+        let(:user2) { Fabricate(:user, username: "UsEr2") }
 
         it "adds by username" do
           expect do
             put "/groups/#{group.id}/members.json",
-              params: { usernames: [user1.username, user2.username].join(",") }
+              params: { usernames: [user1.username, user2.username.upcase].join(",") }
           end.to change { group.users.count }.by(2)
 
           expect(response.status).to eq(200)
@@ -973,13 +1021,22 @@ describe GroupsController do
 
       it "raises an error if user to be removed is not found" do
         delete "/groups/#{group.id}/members.json", params: { user_id: -10 }
-        expect(response.status).to eq(404)
+        expect(response.status).to eq(400)
       end
 
       context "is able to remove a member" do
         it "removes by id" do
           expect do
             delete "/groups/#{group.id}/members.json", params: { user_id: user.id }
+          end.to change { group.users.count }.by(-1)
+
+          expect(response.status).to eq(200)
+        end
+
+        it "removes by id with integer in json" do
+          expect do
+            headers = { "CONTENT_TYPE": "application/json" }
+            delete "/groups/#{group.id}/members.json", params: "{\"user_id\":#{user.id}}", headers: headers
           end.to change { group.users.count }.by(-1)
 
           expect(response.status).to eq(200)
@@ -1046,6 +1103,58 @@ describe GroupsController do
           end
         end
       end
+
+      context '#remove_members' do
+        context "is able to remove several members from a group" do
+          let(:user1) { Fabricate(:user) }
+          let(:user2) { Fabricate(:user, username: "UsEr2") }
+          let(:group1) { Fabricate(:group, users: [user1, user2]) }
+
+          it "removes by username" do
+            expect do
+              delete "/groups/#{group1.id}/members.json",
+                params: { usernames: [user1.username, user2.username.upcase].join(",") }
+            end.to change { group1.users.count }.by(-2)
+            expect(response.status).to eq(200)
+          end
+
+          it "removes by id" do
+            expect do
+              delete "/groups/#{group1.id}/members.json",
+                params: { user_ids: [user1.id, user2.id].join(",") }
+            end.to change { group1.users.count }.by(-2)
+
+            expect(response.status).to eq(200)
+          end
+
+          it "removes by id with integer in json" do
+            expect do
+              headers = { "CONTENT_TYPE": "application/json" }
+              delete "/groups/#{group1.id}/members.json", params: "{\"user_ids\":#{user1.id}}", headers: headers
+            end.to change { group1.users.count }.by(-1)
+
+            expect(response.status).to eq(200)
+          end
+
+          it "removes by email" do
+            expect do
+              delete "/groups/#{group1.id}/members.json",
+                params: { user_emails: [user1.email, user2.email].join(",") }
+            end.to change { group1.users.count }.by(-2)
+
+            expect(response.status).to eq(200)
+          end
+
+          it "only removes users in that group" do
+            expect do
+              delete "/groups/#{group1.id}/members.json",
+                params: { usernames: [user.username, user2.username].join(",") }
+            end.to change { group1.users.count }.by(-1)
+
+            expect(response.status).to eq(200)
+          end
+        end
+      end
     end
   end
 
@@ -1077,7 +1186,7 @@ describe GroupsController do
 
       describe 'when viewing a public group' do
         before do
-          group.update_attributes!(
+          group.update!(
             public_admission: true,
             public_exit: true
           )
@@ -1168,6 +1277,20 @@ describe GroupsController do
       expect(response.status).to eq(400)
     end
 
+    it 'checks for duplicates' do
+      sign_in(user)
+
+      post "/groups/#{group.name}/request_membership.json",
+        params: { reason: 'Please add me in' }
+
+      expect(response.status).to eq(200)
+
+      post "/groups/#{group.name}/request_membership.json",
+        params: { reason: 'Please add me in' }
+
+      expect(response.status).to eq(409)
+    end
+
     it 'should create the right PM' do
       owner1 = Fabricate(:user, last_seen_at: Time.zone.now)
       owner2 = Fabricate(:user, last_seen_at: Time.zone.now - 1 .day)
@@ -1191,7 +1314,7 @@ describe GroupsController do
         group_name: group.name
       ))
 
-      expect(post.raw).to eq('Please add me in')
+      expect(post.raw).to start_with('Please add me in')
       expect(topic.archetype).to eq(Archetype.private_message)
       expect(topic.allowed_users).to contain_exactly(user, owner1, owner2)
       expect(topic.allowed_groups).to eq([])

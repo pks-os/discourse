@@ -1,4 +1,5 @@
 # encoding: UTF-8
+# frozen_string_literal: true
 
 require 'rails_helper'
 require_dependency 'post_destroyer'
@@ -44,7 +45,7 @@ describe TopicStatusUpdater do
     topic = create_topic
 
     called = false
-    updater = -> (topic) { called = true }
+    updater = -> (_) { called = true }
 
     DiscourseEvent.on(:topic_closed, &updater)
     TopicStatusUpdater.new(topic, admin).update!("closed", true)

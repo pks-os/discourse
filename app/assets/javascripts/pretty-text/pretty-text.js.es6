@@ -26,12 +26,10 @@ export function buildOptions(state) {
     lookupPrimaryUserGroupByPostNumber,
     formatUsername,
     emojiUnicodeReplacer,
-    lookupInlineOnebox,
     lookupImageUrls,
     previewing,
     linkify,
-    censoredWords,
-    mentionLookup
+    censoredWords
   } = state;
 
   let features = {
@@ -66,9 +64,7 @@ export function buildOptions(state) {
     lookupAvatarByPostNumber,
     lookupPrimaryUserGroupByPostNumber,
     formatUsername,
-    mentionLookup,
     emojiUnicodeReplacer,
-    lookupInlineOnebox,
     lookupImageUrls,
     censoredWords,
     allowedHrefSchemes: siteSettings.allowed_href_schemes

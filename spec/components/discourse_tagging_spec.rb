@@ -1,4 +1,5 @@
 # encoding: UTF-8
+# frozen_string_literal: true
 
 require 'rails_helper'
 require 'discourse_tagging'
@@ -9,10 +10,11 @@ describe DiscourseTagging do
 
   let(:admin) { Fabricate(:admin) }
   let(:user)  { Fabricate(:user) }
+  let(:guardian) { Guardian.new(user) }
 
   let!(:tag1) { Fabricate(:tag, name: "fun") }
   let!(:tag2) { Fabricate(:tag, name: "fun2") }
-  let!(:tag3) { Fabricate(:tag, name: "fun3") }
+  let!(:tag3) { Fabricate(:tag, name: "Fun3") }
 
   before do
     SiteSetting.tagging_enabled = true
@@ -156,6 +158,121 @@ describe DiscourseTagging do
         expect(PostRevisor.new(post).revise!(topic.user, raw: post.raw + " edit", tags: [])).to be_truthy
         expect(topic.reload.tags).to eq([hidden_tag])
       end
+    end
+
+    context 'tag group with parent tag' do
+      let(:topic) { Fabricate(:topic, user: user) }
+      let(:post) { Fabricate(:post, user: user, topic: topic, post_number: 1) }
+
+      before do
+        tag_group = Fabricate(:tag_group, parent_tag_id: tag1.id)
+        tag_group.tags = [tag3]
+      end
+
+      it "can tag with parent" do
+        valid = DiscourseTagging.tag_topic_by_names(topic, Guardian.new(user), [tag1.name])
+        expect(valid).to eq(true)
+        expect(topic.reload.tags.map(&:name)).to eq([tag1.name])
+      end
+
+      it "can tag with parent and a tag" do
+        valid = DiscourseTagging.tag_topic_by_names(topic, Guardian.new(user), [tag1.name, tag3.name])
+        expect(valid).to eq(true)
+        expect(topic.reload.tags.map(&:name)).to contain_exactly(*[tag1, tag3].map(&:name))
+      end
+
+      it "adds all parent tags that are missing" do
+        parent_tag = Fabricate(:tag, name: 'parent')
+        tag_group2 = Fabricate(:tag_group, parent_tag_id: parent_tag.id)
+        tag_group2.tags = [tag2]
+        valid = DiscourseTagging.tag_topic_by_names(topic, Guardian.new(user), [tag3.name, tag2.name])
+        expect(valid).to eq(true)
+        expect(topic.reload.tags.map(&:name)).to contain_exactly(
+          *[tag1, tag2, tag3, parent_tag].map(&:name)
+        )
+      end
+    end
+  end
+
+  describe '#tags_for_saving' do
+    it "returns empty array if input is nil" do
+      expect(described_class.tags_for_saving(nil, guardian)).to eq([])
+    end
+
+    it "returns empty array if input is empty" do
+      expect(described_class.tags_for_saving([], guardian)).to eq([])
+    end
+
+    it "returns empty array if can't tag topics" do
+      guardian.stubs(:can_tag_topics?).returns(false)
+      expect(described_class.tags_for_saving(['newtag'], guardian)).to eq([])
+    end
+
+    context "can tag topics but not create tags" do
+      before do
+        guardian.stubs(:can_create_tag?).returns(false)
+        guardian.stubs(:can_tag_topics?).returns(true)
+      end
+
+      it "returns empty array if all tags are new" do
+        expect(described_class.tags_for_saving(['newtag', 'newtagplz'], guardian)).to eq([])
+      end
+
+      it "returns only existing tag names" do
+        Fabricate(:tag, name: 'oldtag')
+        Fabricate(:tag, name: 'oldTag2')
+        expect(described_class.tags_for_saving(['newtag', 'oldtag', 'oldtag2'], guardian)).to contain_exactly('oldtag', 'oldTag2')
+      end
+    end
+
+    context "can tag topics and create tags" do
+      before do
+        guardian.stubs(:can_create_tag?).returns(true)
+        guardian.stubs(:can_tag_topics?).returns(true)
+      end
+
+      it "returns given tag names if can create new tags and tag topics" do
+        expect(described_class.tags_for_saving(['newtag1', 'newtag2'], guardian).try(:sort)).to eq(['newtag1', 'newtag2'])
+      end
+
+      it "only sanitizes new tags" do # for backwards compat
+        Tag.new(name: 'math=fun').save(validate: false)
+        expect(described_class.tags_for_saving(['math=fun', 'fun*2@gmail.com'], guardian).try(:sort)).to eq(['math=fun', 'fun2gmailcom'].sort)
+      end
+    end
+
+    describe "clean_tag" do
+      it "downcases new tags if setting enabled" do
+        expect(DiscourseTagging.clean_tag("HeLlO".freeze)).to eq("hello")
+
+        SiteSetting.force_lowercase_tags = false
+        expect(DiscourseTagging.clean_tag("HeLlO")).to eq("HeLlO")
+      end
+    end
+  end
+
+  describe "staff_tag_names" do
+    let(:tag) { Fabricate(:tag) }
+
+    let(:staff_tag) { Fabricate(:tag) }
+    let(:other_staff_tag) { Fabricate(:tag) }
+
+    let!(:staff_tag_group) {
+      Fabricate(
+        :tag_group,
+        permissions: { "staff" => 1, "everyone" => 3 },
+        tag_names: [staff_tag.name]
+      )
+    }
+
+    it "returns all staff tags" do
+      expect(DiscourseTagging.staff_tag_names).to contain_exactly(staff_tag.name)
+
+      staff_tag_group.update(tag_names: [staff_tag.name, other_staff_tag.name])
+      expect(DiscourseTagging.staff_tag_names).to contain_exactly(staff_tag.name, other_staff_tag.name)
+
+      staff_tag_group.update(tag_names: [other_staff_tag.name])
+      expect(DiscourseTagging.staff_tag_names).to contain_exactly(other_staff_tag.name)
     end
   end
 end

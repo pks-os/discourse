@@ -64,10 +64,11 @@ class Auth::Result
     else
       result = { email: email,
                  username: UserNameSuggester.suggest(username || name || email),
-                 # this feels a tad wrong
-                 auth_provider: authenticator_name.capitalize,
+                 auth_provider: authenticator_name,
                  email_valid: !!email_valid,
                  omit_username: !!omit_username }
+
+      result[:destination_url] = destination_url if destination_url.present?
 
       if SiteSetting.enable_names?
         result[:name] = User.suggest_name(name || username || email)

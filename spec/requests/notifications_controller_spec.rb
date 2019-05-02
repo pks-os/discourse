@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 def create_notification(user_id, resp_code, matcher)
@@ -106,7 +108,7 @@ describe NotificationsController do
 
       describe '#update' do
         it "can't update notification" do
-          update_notification(8, 403, :to_not)
+          update_notification(Fabricate(:topic).id, 403, :to_not)
         end
       end
 
@@ -160,7 +162,7 @@ describe NotificationsController do
 
     describe '#update' do
       it "can't update notification" do
-        update_notification(8, 403, :to_not)
+        update_notification(Fabricate(:topic).id, 403, :to_not)
       end
     end
 

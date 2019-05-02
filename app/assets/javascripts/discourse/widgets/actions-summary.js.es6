@@ -1,9 +1,8 @@
 import { createWidget } from "discourse/widgets/widget";
 import { avatarFor } from "discourse/widgets/post";
-import { iconNode } from "discourse-common/lib/icon-library";
 import { h } from "virtual-dom";
-import { dateNode } from "discourse/helpers/node";
 import { userPath } from "discourse/lib/url";
+import hbs from "discourse/widgets/hbs-compiler";
 
 export function avatarAtts(user) {
   return {
@@ -56,7 +55,6 @@ createWidget("small-user-list", {
       let buffer = [icons];
       if (description) {
         buffer.push(description);
-        buffer.push(".");
       }
       return buffer;
     }
@@ -157,38 +155,19 @@ createWidget("actions-summary-item", {
   }
 });
 
-createWidget("deleted-post", {
-  tagName: "div.post-action.deleted-post",
-
-  html(attrs) {
-    return [
-      iconNode("trash-o"),
-      " ",
-      avatarFor.call(this, "small", {
-        template: attrs.deletedByAvatarTemplate,
-        username: attrs.deletedByUsername
-      }),
-      " ",
-      dateNode(attrs.deleted_at)
-    ];
-  }
-});
-
 export default createWidget("actions-summary", {
   tagName: "section.post-actions",
-
-  html(attrs) {
-    const actionsSummary = attrs.actionsSummary || [];
-    const body = [];
-    actionsSummary.forEach(as => {
-      body.push(this.attach("actions-summary-item", as));
-      body.push(h("div.clearfix"));
-    });
-
-    if (attrs.deleted_at) {
-      body.push(this.attach("deleted-post", attrs));
-    }
-
-    return body;
-  }
+  template: hbs`
+    {{#each attrs.actionsSummary as |as|}}
+      {{attach widget="actions-summary-item" attrs=as}}
+      <div class='clearfix'></div>
+    {{/each}}
+    {{#if attrs.deleted_at}}
+      <div class='post-action deleted-post'>
+        {{d-icon "far-trash-alt"}}
+        {{avatar size="small" template=attrs.deletedByAvatarTemplate username=attrs.deletedByUsername}}
+        {{date attrs.deleted_at}}
+      </div>
+    {{/if}}
+  `
 });

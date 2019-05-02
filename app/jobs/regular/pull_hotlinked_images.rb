@@ -20,6 +20,7 @@ module Jobs
         downloaded = FileHelper.download(
           src,
           max_file_size: @max_size,
+          retain_on_max_file_size_exceeded: true,
           tmp_file_name: "discourse-hotlinked",
           follow_redirect: true
         )
@@ -34,8 +35,6 @@ module Jobs
     end
 
     def execute(args)
-      return unless SiteSetting.download_remote_images_to_local?
-
       post_id = args[:post_id]
       raise Discourse::InvalidParameters.new(:post_id) unless post_id.present?
 
@@ -59,7 +58,7 @@ module Jobs
         src = original_src = image['src']
         src = "#{SiteSetting.force_https ? "https" : "http"}:#{src}" if src.start_with?("//")
 
-        if is_valid_image_url(src)
+        if should_download_image?(src)
           begin
             # have we already downloaded that file?
             schemeless_src = remove_scheme(original_src)
@@ -129,38 +128,38 @@ module Jobs
         changes = { raw: raw, edit_reason: I18n.t("upload.edit_reason") }
         post.revise(Discourse.system_user, changes, bypass_bump: true)
       elsif has_downloaded_image || has_new_large_image || has_new_broken_image
-        post.trigger_post_process(true)
+        post.trigger_post_process(bypass_bump: true)
       end
     end
 
     def extract_images_from(html)
       doc = Nokogiri::HTML::fragment(html)
-      doc.css("img[src]") - doc.css("img.avatar")
+      doc.css("img[src]") - doc.css("img.avatar") - doc.css(".lightbox img[src]")
     end
 
-    def is_valid_image_url(src)
+    def should_download_image?(src)
       # make sure we actually have a url
       return false unless src.present?
-      # we don't want to pull uploaded images
-      return false if Discourse.store.has_been_uploaded?(src)
-      # we don't want to pull relative images
-      return false if src =~ /\A\/[^\/]/i
+
+      # If file is on the forum or CDN domain
+      if Discourse.store.has_been_uploaded?(src) || src =~ /\A\/[^\/]/i
+        # Return true if we can't find the upload in the db
+        return !Upload.get_from_url(src)
+      end
+
+      # Don't download non-local images unless site setting enabled
+      return false unless SiteSetting.download_remote_images_to_local?
 
       # parse the src
       begin
         uri = URI.parse(src)
-      rescue URI::InvalidURIError
+      rescue URI::Error
         return false
       end
 
       hostname = uri.hostname
       return false unless hostname
 
-      # we don't want to pull images hosted on the CDN (if we use one)
-      return false if Discourse.asset_host.present? && URI.parse(Discourse.asset_host).hostname == hostname
-      return false if SiteSetting.Upload.s3_cdn_url.present? && URI.parse(SiteSetting.Upload.s3_cdn_url).hostname == hostname
-      # we don't want to pull images hosted on the main domain
-      return false if URI.parse(Discourse.base_url_no_prefix).hostname == hostname
       # check the domains blacklist
       SiteSetting.should_download_images?(src)
     end

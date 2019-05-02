@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 require_dependency 'active_record/connection_adapters/postgresql_fallback_adapter'
 
@@ -29,66 +31,48 @@ describe ActiveRecord::ConnectionHandling do
   before do
     @threads = Thread.list
     postgresql_fallback_handler.initialized = true
-
-    ['default', multisite_db].each do |db|
-      postgresql_fallback_handler.master_up(db)
-    end
   end
 
   after do
     Sidekiq.unpause!
+    (Thread.list - @threads).each(&:kill)
     postgresql_fallback_handler.setup!
-    Discourse.disable_readonly_mode(Discourse::PG_READONLY_MODE_KEY)
+
     ActiveRecord::Base.unstub(:postgresql_connection)
+    ActiveRecord::Base.clear_all_connections!
     ActiveRecord::Base.establish_connection
 
-    (Thread.list - @threads).each { |thread| thread.join(5) }
+    $redis.flushall
   end
 
   describe "#postgresql_fallback_connection" do
     it 'should return a PostgreSQL adapter' do
-      begin
-        connection = ActiveRecord::Base.postgresql_fallback_connection(config)
+      connection = ActiveRecord::Base.postgresql_fallback_connection(config)
 
-        expect(connection)
-          .to be_an_instance_of(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter)
-      ensure
-        connection.disconnect!
-      end
+      expect(connection)
+        .to be_an_instance_of(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter)
     end
 
     context 'when master server is down' do
-      before do
-        @replica_connection = mock('replica_connection')
-      end
-
-      after do
-        pg_readonly_mode_key = Discourse::PG_READONLY_MODE_KEY
-
-        with_multisite_db(multisite_db) do
-          Discourse.disable_readonly_mode(pg_readonly_mode_key)
-        end
-
-        Discourse.disable_readonly_mode(pg_readonly_mode_key)
-        ActiveRecord::Base.establish_connection(ActiveRecord::Base.configurations[Rails.env])
-      end
+      let(:replica_connection) { mock('replica_connection') }
 
       it 'should failover to a replica server' do
-        # erratically fails with: ActiveRecord::ConnectionTimeoutError:
-        # could not obtain a connection from the pool within 5.000 seconds (waited 5.000 seconds); all pooled connections were in use
-        #
-        skip("This test is failing erratically")
+        RailsMultisite::ConnectionManagement
+          .stubs(:all_dbs)
+          .returns(['default', multisite_db])
 
-        RailsMultisite::ConnectionManagement.stubs(:all_dbs).returns(['default', multisite_db])
         postgresql_fallback_handler.expects(:verify_master).at_least(3)
 
         [config, multisite_config].each do |configuration|
-          ActiveRecord::Base.expects(:postgresql_connection).with(configuration).raises(PG::ConnectionBad)
-          ActiveRecord::Base.expects(:verify_replica).with(@replica_connection)
+          ActiveRecord::Base.expects(:postgresql_connection)
+            .with(configuration)
+            .raises(PG::ConnectionBad)
+
+          ActiveRecord::Base.expects(:verify_replica).with(replica_connection)
 
           ActiveRecord::Base.expects(:postgresql_connection).with(
             configuration.dup.merge(host: replica_host, port: replica_port)
-          ).returns(@replica_connection)
+          ).returns(replica_connection)
         end
 
         expect(postgresql_fallback_handler.master_down?).to eq(nil)
@@ -99,6 +83,7 @@ describe ActiveRecord::ConnectionHandling do
         end.first
 
         expect(message.data[:db]).to eq('default')
+        expect(message.data[:pid]).to eq(Process.pid)
 
         expect { ActiveRecord::Base.postgresql_fallback_connection(config) }
           .to change { Discourse.readonly_mode? }.from(false).to(true)
@@ -117,8 +102,9 @@ describe ActiveRecord::ConnectionHandling do
 
             expect(message.data[:db]).to eq(multisite_db)
 
-            expect { ActiveRecord::Base.postgresql_fallback_connection(multisite_config) }
-              .to change { Discourse.readonly_mode? }.from(false).to(true)
+            expect do
+              ActiveRecord::Base.postgresql_fallback_connection(multisite_config)
+            end.to change { Discourse.readonly_mode? }.from(false).to(true)
 
             expect(postgresql_fallback_handler.master_down?).to eq(true)
           ensure
@@ -133,8 +119,6 @@ describe ActiveRecord::ConnectionHandling do
 
         expect(Discourse.readonly_mode?).to eq(false)
         expect(Sidekiq.paused?).to eq(false)
-
-        # fails sometimes on this line!
         expect(ActiveRecord::Base.connection_pool.connections.count).to eq(0)
         expect(postgresql_fallback_handler.master_down?).to eq(nil)
 
@@ -145,11 +129,17 @@ describe ActiveRecord::ConnectionHandling do
 
     context 'when both master and replica server is down' do
       it 'should raise the right error' do
-        ActiveRecord::Base.expects(:postgresql_connection).with(config).raises(PG::ConnectionBad)
+        ActiveRecord::Base.expects(:postgresql_connection)
+          .with(config)
+          .raises(PG::ConnectionBad)
+          .once
 
-        ActiveRecord::Base.expects(:postgresql_connection).with(
-          config.dup.merge(host: replica_host, port: replica_port)
-        ).raises(PG::ConnectionBad).once
+        ActiveRecord::Base.expects(:postgresql_connection)
+          .with(
+            config.dup.merge(host: replica_host, port: replica_port)
+          )
+          .raises(PG::ConnectionBad)
+          .once
 
         postgresql_fallback_handler.expects(:verify_master).twice
 
@@ -172,8 +162,11 @@ describe ActiveRecord::ConnectionHandling do
   end
 
   def with_multisite_db(dbname)
-    RailsMultisite::ConnectionManagement.expects(:current_db).returns(dbname).at_least_once
-    yield
-    RailsMultisite::ConnectionManagement.unstub(:current_db)
+    begin
+      RailsMultisite::ConnectionManagement.expects(:current_db).returns(dbname).at_least_once
+      yield
+    ensure
+      RailsMultisite::ConnectionManagement.unstub(:current_db)
+    end
   end
 end

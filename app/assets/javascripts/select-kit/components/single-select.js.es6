@@ -5,7 +5,10 @@ import {
 } from "ember-addons/ember-computed-decorators";
 const { get, isNone, isEmpty, isPresent, run, makeArray } = Ember;
 
-import { applyOnSelectPluginApiCallbacks } from "select-kit/mixins/plugin-api";
+import {
+  applyOnSelectPluginApiCallbacks,
+  applyOnSelectNonePluginApiCallbacks
+} from "select-kit/mixins/plugin-api";
 
 export default SelectKitComponent.extend({
   pluginApiIdentifiers: ["single-select"],
@@ -51,6 +54,11 @@ export default SelectKitComponent.extend({
   mutateContent() {},
   mutateValue(computedValue) {
     this.set("value", computedValue);
+  },
+
+  forceValue(value) {
+    this.mutateValue(value);
+    this._compute();
   },
 
   _beforeWillComputeValue(value) {
@@ -109,7 +117,7 @@ export default SelectKitComponent.extend({
 
   @computed("computedAsyncContent.[]", "computedValue")
   filteredAsyncComputedContent(computedAsyncContent, computedValue) {
-    computedAsyncContent = computedAsyncContent.filter(c => {
+    computedAsyncContent = (computedAsyncContent || []).filter(c => {
       return computedValue !== get(c, "value");
     });
 
@@ -207,10 +215,30 @@ export default SelectKitComponent.extend({
   },
 
   select(computedContentItem) {
+    if (computedContentItem.__sk_row_type === "noopRow") {
+      applyOnSelectPluginApiCallbacks(
+        this.get("pluginApiIdentifiers"),
+        computedContentItem.value,
+        this
+      );
+
+      this._boundaryActionHandler("onSelect", computedContentItem.value);
+      return;
+    }
+
+    if (this.get("hasSelection")) {
+      this.deselect(this.get("selection.value"));
+    }
+
     if (
       !computedContentItem ||
       computedContentItem.__sk_row_type === "noneRow"
     ) {
+      applyOnSelectNonePluginApiCallbacks(
+        this.get("pluginApiIdentifiers"),
+        this
+      );
+      this._boundaryActionHandler("onSelectNone");
       this.clearSelection();
       return;
     }
@@ -240,12 +268,18 @@ export default SelectKitComponent.extend({
     if (this.validateSelect(computedContentItem)) {
       this.willSelect(computedContentItem);
       this.clearFilter();
-      this.setProperties({
-        highlighted: null,
-        computedValue: computedContentItem.value
-      });
 
-      run.next(() => this.mutateAttributes());
+      const action = computedContentItem.originalContent.action;
+      if (action) {
+        action();
+      } else {
+        this.setProperties({
+          highlighted: null,
+          computedValue: computedContentItem.value
+        });
+
+        run.next(() => this.mutateAttributes());
+      }
 
       run.schedule("afterRender", () => {
         this.didSelect(computedContentItem);

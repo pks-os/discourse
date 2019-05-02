@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe UserBadgesController do
@@ -36,6 +38,15 @@ describe UserBadgesController do
 
     it 'returns user_badges for a user' do
       get "/user-badges/#{user.username}.json"
+
+      expect(response.status).to eq(200)
+      parsed = JSON.parse(response.body)
+      expect(parsed["user_badges"].length).to eq(1)
+    end
+
+    it 'returns user_badges for a user with period in username' do
+      user.update!(username: "myname.test")
+      get "/user-badges/#{user.username}", xhr: true
 
       expect(response.status).to eq(200)
       parsed = JSON.parse(response.body)
@@ -133,6 +144,83 @@ describe UserBadgesController do
       end.map { |event| event[:event_name] }
 
       expect(events).to include(:user_badge_granted)
+    end
+
+    it 'does not grant badge when external link is used in reason' do
+      admin = Fabricate(:admin)
+      post = create_post
+
+      sign_in(admin)
+
+      post "/user_badges.json", params: {
+        badge_id: badge.id,
+        username: user.username,
+        reason: "http://example.com/" + post.url
+      }
+
+      expect(response.status).to eq(400)
+    end
+
+    it 'does not grant badge if invalid discourse post/topic link is used in reason' do
+      admin = Fabricate(:admin)
+      post = create_post
+
+      sign_in(admin)
+
+      post "/user_badges.json", params: {
+        badge_id: badge.id,
+        username: user.username,
+        reason: Discourse.base_url + "/random_url/" + post.url
+      }
+
+      expect(response.status).to eq(400)
+    end
+
+    it 'grants badge when valid post/topic link is given in reason' do
+      admin = Fabricate(:admin)
+      post = create_post
+
+      sign_in(admin)
+
+      post "/user_badges.json", params: {
+        badge_id: badge.id,
+        username: user.username,
+        reason: Discourse.base_url + post.url
+      }
+
+      expect(response.status).to eq(200)
+    end
+
+    describe 'with relative_url_root' do
+      before do
+        @orig_relative_url_root = ActionController::Base.config.relative_url_root
+        ActionController::Base.config.relative_url_root = "/discuss"
+      end
+
+      after do
+        ActionController::Base.config.relative_url_root = @orig_relative_url_root
+      end
+
+      it 'grants badge when valid post/topic link is given in reason' do
+        admin = Fabricate(:admin)
+        post = create_post
+
+        sign_in(admin)
+
+        post "/user_badges.json", params: {
+          badge_id: badge.id,
+          username: user.username,
+          reason: "#{Discourse.base_url}#{post.url}"
+        }
+
+        expect(response.status).to eq(200)
+
+        expect(UserBadge.exists?(
+          badge_id: badge.id,
+          post_id: post.id,
+          granted_by: admin.id)
+        ).to eq(true)
+      end
     end
   end
 

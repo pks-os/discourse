@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe Jobs::ToggleTopicClosed do
@@ -64,7 +66,7 @@ describe Jobs::ToggleTopicClosed do
           topic_timer = topic.public_topic_timer
 
           expect(topic_timer.status_type).to eq(TopicTimer.types[:close])
-          expect(topic_timer.execute_at).to eq(5.hours.from_now)
+          expect(topic_timer.execute_at).to eq_time(5.hours.from_now)
         end
       end
     end

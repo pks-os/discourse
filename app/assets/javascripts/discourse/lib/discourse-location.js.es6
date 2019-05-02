@@ -1,3 +1,5 @@
+import { defaultHomepage } from "discourse/lib/utilities";
+
 /**
 @module Discourse
 */
@@ -66,7 +68,8 @@ const DiscourseLocation = Ember.Object.extend({
   getURL() {
     const location = get(this, "location");
     let url = location.pathname;
-    url = url.replace(Discourse.BaseUri, "");
+
+    url = url.replace(new RegExp(`^${Discourse.BaseUri}`), "");
 
     const search = location.search || "";
     url += search;
@@ -86,7 +89,10 @@ const DiscourseLocation = Ember.Object.extend({
     path = this.formatURL(path);
 
     if (state && state.path !== path) {
-      this.pushState(path);
+      const paths = [path, state.path];
+      if (!(paths.includes("/") && paths.includes(`/${defaultHomepage()}`))) {
+        this.pushState(path);
+      }
     }
   },
 

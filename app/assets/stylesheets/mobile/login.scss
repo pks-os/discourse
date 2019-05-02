@@ -20,10 +20,10 @@
     margin-left: -2%;
 
     button {
-      flex: 1 1 48%;
+      flex: 1 1 47%;
       max-width: 70%;
       margin: 1% 0 1% 2%;
-      font-size: $font-up-1;
+      font-size: $font-0;
       white-space: nowrap;
       @media screen and (max-width: 360px) {
         font-size: $font-0;
@@ -42,13 +42,19 @@
   }
 
   table {
-    // width: 100%;
-    padding: 10px;
+    width: 100%;
   }
 
   tr {
     &.input td label {
       margin-top: 0.75em;
+    }
+
+    td label {
+      max-width: 280px;
+      display: block;
+      overflow: hidden;
+      word-wrap: break-word;
     }
 
     &:not(.instructions) td {
@@ -130,9 +136,6 @@
       padding: 4px 0;
     }
   }
-  #second-factor {
-    display: none;
-  }
 }
 
 // styles for the
@@ -147,9 +150,10 @@
     }
   }
 
-  #login-buttons + .login-form {
-    border-top: 1px solid $primary-low;
+  #login-buttons {
+    border-bottom: 1px solid $primary-low;
   }
+
   .login-form {
     margin-bottom: 0.75em;
   }
@@ -157,33 +161,21 @@
 
 .create-account {
   .user-fields {
-    margin-top: 10px;
-    padding-top: 15px;
-    border-top: 1px solid $primary-low;
     display: flex;
     flex-direction: column;
-  }
-
-  .user-field.confirm {
-    margin-top: 10px;
   }
 
   .user-field {
     display: flex;
     flex-direction: column;
 
-    .required {
-      display: none; // needs more work
-    }
     > label {
       width: auto;
-      font-weight: bold;
     }
     .controls {
       margin-left: 0;
-
-      .instructions {
-        margin-top: 5px;
+      label {
+        line-height: $line-height-medium;
       }
     }
   }

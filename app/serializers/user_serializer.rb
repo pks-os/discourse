@@ -49,6 +49,10 @@ class UserSerializer < BasicUserSerializer
              :can_edit_email,
              :can_edit_name,
              :stats,
+             :ignored,
+             :muted,
+             :can_ignore_user,
+             :can_mute_user,
              :can_send_private_messages,
              :can_send_private_message_to_user,
              :bio_excerpt,
@@ -110,9 +114,12 @@ class UserSerializer < BasicUserSerializer
                      :custom_avatar_template,
                      :has_title_badges,
                      :muted_usernames,
+                     :ignored_usernames,
                      :mailing_list_posts_per_day,
                      :can_change_bio,
-                     :user_api_keys
+                     :user_api_keys,
+                     :user_auth_tokens,
+                     :user_auth_token_logs
 
   untrusted_attributes :bio_raw,
                        :bio_cooked,
@@ -184,11 +191,30 @@ class UserSerializer < BasicUserSerializer
         id: k.id,
         application_name: k.application_name,
         scopes: k.scopes.map { |s| I18n.t("user_api_key.scopes.#{s}") },
-        created_at: k.created_at
+        created_at: k.created_at,
+        last_used_at: k.last_used_at,
       }
     end
 
+    keys.sort! { |a, b| a[:last_used_at].to_time <=> b[:last_used_at].to_time }
     keys.length > 0 ? keys : nil
+  end
+
+  def user_auth_tokens
+    ActiveModel::ArraySerializer.new(
+      object.user_auth_tokens,
+      each_serializer: UserAuthTokenSerializer,
+      scope: scope
+    )
+  end
+
+  def user_auth_token_logs
+    ActiveModel::ArraySerializer.new(
+      object.user_auth_token_logs.where(
+        action: UserAuthToken::USER_ACTIONS
+      ).order(:created_at).reverse_order,
+      each_serializer: UserAuthTokenLogSerializer
+    )
   end
 
   def bio_raw
@@ -206,7 +232,7 @@ class UserSerializer < BasicUserSerializer
   def website_name
     uri = begin
       URI(website.to_s)
-    rescue URI::InvalidURIError
+    rescue URI::Error
     end
 
     return if uri.nil? || uri.host.nil?
@@ -251,6 +277,22 @@ class UserSerializer < BasicUserSerializer
 
   def stats
     UserAction.stats(object.id, scope)
+  end
+
+  def ignored
+    IgnoredUser.where(user_id: scope.user&.id, ignored_user_id: object.id).exists?
+  end
+
+  def muted
+    MutedUser.where(user_id: scope.user&.id, muted_user_id: object.id).exists?
+  end
+
+  def can_mute_user
+    scope.can_mute_user?(object.id)
+  end
+
+  def can_ignore_user
+    scope.can_ignore_user?(object.id)
   end
 
   # Needed because 'send_private_message_to_user' will always return false
@@ -346,6 +388,10 @@ class UserSerializer < BasicUserSerializer
     MutedUser.where(user_id: object.id).joins(:muted_user).pluck(:username)
   end
 
+  def ignored_usernames
+    IgnoredUser.where(user_id: object.id).joins(:ignored_user).pluck(:username)
+  end
+
   def include_private_messages_stats?
     can_edit && !(omit_stats == true)
   end
@@ -399,7 +445,8 @@ class UserSerializer < BasicUserSerializer
   end
 
   def user_fields
-    object.user_fields
+    allowed_keys = scope.allowed_user_field_ids(object).map(&:to_s)
+    object.user_fields&.select { |k, v| allowed_keys.include?(k) }
   end
 
   def include_user_fields?

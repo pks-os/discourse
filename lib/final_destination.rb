@@ -26,7 +26,7 @@ class FinalDestination
     "HTTPS_DOMAIN_#{domain}"
   end
 
-  attr_reader :status, :cookie, :status_code
+  attr_reader :status, :cookie, :status_code, :ignored
 
   def initialize(url, opts = nil)
     @url = url
@@ -34,9 +34,25 @@ class FinalDestination
 
     @opts = opts || {}
     @force_get_hosts = @opts[:force_get_hosts] || []
+    @preserve_fragment_url_hosts = @opts[:preserve_fragment_url_hosts] || []
     @opts[:max_redirects] ||= 5
     @opts[:lookup_ip] ||= lambda { |host| FinalDestination.lookup_ip(host) }
-    @ignored = [Discourse.base_url_no_prefix] + (@opts[:ignore_redirects] || [])
+
+    @ignored = @opts[:ignore_hostnames] || []
+
+    ignore_redirects = [Discourse.base_url_no_prefix]
+
+    if @opts[:ignore_redirects]
+      ignore_redirects.concat(@opts[:ignore_redirects])
+    end
+
+    ignore_redirects.each do |ignore_redirect|
+      ignore_redirect = uri(ignore_redirect)
+      if ignore_redirect.present? && ignore_redirect.hostname
+        @ignored << ignore_redirect.hostname
+      end
+    end
+
     @limit = @opts[:max_redirects]
     @status = :ready
     @http_verb = @force_get_hosts.any? { |host| hostname_matches?(host) } ? :get : :head
@@ -44,6 +60,7 @@ class FinalDestination
     @limited_ips = []
     @verbose = @opts[:verbose] || false
     @timeout = @opts[:timeout] || nil
+    @preserve_fragment_url = @preserve_fragment_url_hosts.any? { |host| hostname_matches?(host) }
   end
 
   def self.connection_timeout
@@ -70,12 +87,26 @@ class FinalDestination
     result
   end
 
-  def small_get(headers)
-    Net::HTTP.start(@uri.host, @uri.port, use_ssl: @uri.is_a?(URI::HTTPS)) do |http|
-      http.open_timeout = timeout
-      http.read_timeout = timeout
-      http.request_get(@uri.request_uri, headers)
+  def small_get(request_headers)
+    status_code, response_headers = nil
+
+    catch(:done) do
+      Net::HTTP.start(@uri.host, @uri.port, use_ssl: @uri.is_a?(URI::HTTPS)) do |http|
+        http.open_timeout = timeout
+        http.read_timeout = timeout
+        http.request_get(@uri.request_uri, request_headers) do |resp|
+          status_code = resp.code.to_i
+          response_headers = resp.to_hash
+
+          # see: https://bugs.ruby-lang.org/issues/15624
+          # if we allow response to return then body will be read
+          # got to abort without reading body
+          throw :done
+        end
+      end
     end
+
+    [status_code, response_headers]
   end
 
   # this is a new interface for simply getting
@@ -131,16 +162,16 @@ class FinalDestination
       return nil
     end
 
-    @ignored.each do |host|
-      if hostname_matches?(host)
-        @status = :resolved
-        return @uri
-      end
-    end
-
     unless validate_uri
       log(:warn, "FinalDestination could not resolve URL (invalid URI): #{@uri}") if @verbose
       return nil
+    end
+
+    @ignored.each do |host|
+      if @uri&.hostname&.match?(host)
+        @status = :resolved
+        return @uri
+      end
     end
 
     headers = request_headers
@@ -160,20 +191,19 @@ class FinalDestination
       @status = :resolved
       return @uri
     when 400, 405, 406, 409, 501
-      get_response = small_get(request_headers)
+      response_status, small_headers = small_get(request_headers)
 
-      response_status = get_response.code.to_i
       if response_status == 200
         @status = :resolved
         return @uri
       end
 
       response_headers = {}
-      if cookie_val = get_response.get_fields('set-cookie')
+      if cookie_val = small_headers['set-cookie']
         response_headers[:cookies] = cookie_val
       end
 
-      if location_val = get_response.get_fields('location')
+      if location_val = small_headers['location']
         response_headers[:location] = location_val.join
       end
     end
@@ -195,6 +225,7 @@ class FinalDestination
 
     if location
       old_port = @uri.port
+      location = "#{location}##{@uri.fragment}" if @preserve_fragment_url && @uri.fragment.present?
       location = "#{@uri.scheme}://#{@uri.host}#{location}" if location[0] == "/"
       @uri = uri(location)
       @limit -= 1
@@ -378,8 +409,8 @@ class FinalDestination
 
   def uri(location)
     begin
-      URI(location)
-    rescue URI::InvalidURIError, ArgumentError
+      URI.parse(location)
+    rescue URI::Error
     end
   end
 

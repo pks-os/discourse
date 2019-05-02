@@ -6,7 +6,7 @@
 
 [Sign up for DigitalOcean][do], update billing info, then create your new cloud server.
 
-- The default of **Ubuntu 16.04 LTS x64** works fine. At minimum, a 64-bit Linux OS with a kernel version of 3.10+ is required.
+- The default of **Ubuntu 18.04 LTS x64** works fine. At minimum, a 64-bit Linux OS with a kernel version of 3.10+ is required.
 
 - The default of **1 GB** RAM works fine for small Discourse communities. We recommend 2 GB RAM for larger communities.
 
@@ -79,13 +79,11 @@ Answer the following questions when prompted:
     SMTP password? [pa$$word]: 
     Let's Encrypt account email? (ENTER to skip) [me@example.com]: 
 
-This will generate an `app.yml` configuration file on your behalf, and then kicks off bootstrap. Bootstrapping takes between **2-8 minutes** to set up your Discourse. If you need to change these settings after bootstrapping, you can run `./discourse-setup` again (it will read your old values from the file) or edit `/containers/app.yml` with `nano` and then `./launcher rebuild app`, otherwise your changes will not take effect.
-
-**NOTE:** You should not attempt to enable Let's Encrypt unless the DNS record for hostname resolves to your server. You can run `./discourse-setup` again later to make any changes.
+This will generate an `app.yml` configuration file on your behalf, and then kicks off bootstrap. Bootstrapping takes between **2-8 minutes** to set up your Discourse. If you need to change these settings after bootstrapping, you can run `./discourse-setup` again (it will re-use your previous values from the file) or edit `/containers/app.yml` manually with `nano` and then `./launcher rebuild app`, otherwise your changes will not take effect.
 
 ### Start Discourse
 
- Once bootstrapping is complete, your Discourse should be accessible in your web browser via the domain name `discourse.example.com` you entered earlier, provided you configured DNS. If not, you can visit the server IP directly, e.g. `http://192.168.1.1`.
+ Once bootstrapping is complete, your Discourse should be accessible in your web browser via the domain name `discourse.example.com` you entered earlier.
 
 <img src="https://www.discourse.org/images/install/17/discourse-congrats.png" width="650">
 
@@ -109,15 +107,17 @@ After completing the setup wizard, you should see Staff topics and **READ ME FIR
 
 ### Post-Install Maintenance
 
-- We strongly suggest you turn on automatic security updates for your OS. In Ubuntu use the `dpkg-reconfigure -plow unattended-upgrades` command.
-- If you are using a password and not a SSH key, be sure to enforce a strong root password. In Ubuntu use the `apt-get install libpam-cracklib` package. We also recommend `apt-get install fail2ban` which will default block any IP addresses for 10 minutes that attempt more than 3 password retries.
-- If you need or want a default firewall, [turn on ufw](https://meta.discourse.org/t/configure-a-firewall-for-discourse/20584).
+- We strongly suggest you turn on automatic security updates for your OS. In Ubuntu use the `dpkg-reconfigure -plow unattended-upgrades` command. In CentOS/RHEL, use the [`yum-cron`](https://www.cyberciti.biz/faq/fedora-automatic-update-retrieval-installation-with-cron/) package.
+- If you are using a password and not a SSH key, be sure to enforce a strong root password. In Ubuntu use the `apt-get install libpam-cracklib` package. We also recommend `fail2ban` which blocks any IP addresses for 10 minutes that attempt more than 3 password retries.
+  - **Ubuntu**: `apt-get install fail2ban`
+  - **CentOS/RHEL**: `sudo yum install fail2ban` (requires [EPEL](https://support.rackspace.com/how-to/install-epel-and-additional-repositories-on-centos-and-red-hat/))
+- If you need or want a default firewall, [turn on ufw](https://meta.discourse.org/t/configure-a-firewall-for-discourse/20584) for Ubuntu or use `firewalld` for CentOS/RHEL 7 or later.
 
 You will get email reminders as new versions of Discourse are released. Please stay current to get the latest features and security fixes. To **upgrade Discourse to the latest version**, visit `/admin/upgrade` in your browser and click the Upgrade button.
 
 The `launcher` command in the `/var/discourse` folder can be used for various kinds of maintenance:
 
-```
+``` text
 Usage: launcher COMMAND CONFIG [--skip-prereqs] [--docker-args STRING]
 Commands:
     start:      Start/initialize a container

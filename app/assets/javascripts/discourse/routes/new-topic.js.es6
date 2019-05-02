@@ -6,29 +6,22 @@ export default Discourse.Route.extend({
     if (Discourse.User.current()) {
       let category, category_id;
 
-      if (transition.queryParams.category_id) {
-        category_id = transition.queryParams.category_id;
+      if (transition.to.queryParams.category_id) {
+        category_id = transition.to.queryParams.category_id;
         category = Category.findById(category_id);
-      } else if (transition.queryParams.category) {
-        const splitCategory = transition.queryParams.category.split("/");
-
-        if (!splitCategory[1]) {
-          category = this.site
-            .get("categories")
-            .findBy("nameLower", splitCategory[0].toLowerCase());
-        } else {
-          const categories = this.site.get("categories");
-          const mainCategory = categories.findBy(
-            "nameLower",
-            splitCategory[0].toLowerCase()
+      } else if (transition.to.queryParams.category) {
+        const splitCategory = transition.to.queryParams.category.split("/");
+        category = this._getCategory(
+          splitCategory[0],
+          splitCategory[1],
+          "nameLower"
+        );
+        if (!category) {
+          category = this._getCategory(
+            splitCategory[0],
+            splitCategory[1],
+            "slug"
           );
-          category = categories.find(function(item) {
-            return (
-              item &&
-              item.get("nameLower") === splitCategory[1].toLowerCase() &&
-              item.get("parent_category_id") === mainCategory.id
-            );
-          });
         }
 
         if (category) {
@@ -53,10 +46,10 @@ export default Discourse.Route.extend({
             Ember.run.next(function() {
               e.send(
                 "createNewTopicViaParams",
-                transition.queryParams.title,
-                transition.queryParams.body,
+                transition.to.queryParams.title,
+                transition.to.queryParams.body,
                 category_id,
-                transition.queryParams.tags
+                transition.to.queryParams.tags
               );
             });
           }
@@ -67,10 +60,10 @@ export default Discourse.Route.extend({
             Ember.run.next(function() {
               e.send(
                 "createNewTopicViaParams",
-                transition.queryParams.title,
-                transition.queryParams.body,
+                transition.to.queryParams.title,
+                transition.to.queryParams.body,
                 null,
-                transition.queryParams.tags
+                transition.to.queryParams.tags
               );
             });
           }
@@ -79,12 +72,30 @@ export default Discourse.Route.extend({
     } else {
       // User is not logged in
       $.cookie("destination_url", window.location.href);
-      if (Discourse.showingSignup) {
-        // We're showing the sign up modal
-        Discourse.showingSignup = false;
-      } else {
-        self.replaceWith("login");
+      Discourse.useFullScreenLogin = true;
+      self.replaceWith("login");
+    }
+  },
+
+  _getCategory(mainCategory, subCategory, type) {
+    let category;
+    if (!subCategory) {
+      category = this.site
+        .get("categories")
+        .findBy(type, mainCategory.toLowerCase());
+    } else {
+      const categories = this.site.get("categories");
+      const main = categories.findBy(type, mainCategory.toLowerCase());
+      if (main) {
+        category = categories.find(function(item) {
+          return (
+            item &&
+            item.get(type) === subCategory.toLowerCase() &&
+            item.get("parent_category_id") === main.id
+          );
+        });
       }
     }
+    return category;
   }
 });

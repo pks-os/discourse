@@ -7,6 +7,11 @@ class Auth::DefaultCurrentUserProvider
 
   CURRENT_USER_KEY ||= "_DISCOURSE_CURRENT_USER"
   API_KEY ||= "api_key"
+  API_USERNAME ||= "api_username"
+  HEADER_API_KEY ||= "HTTP_API_KEY"
+  HEADER_API_USERNAME ||= "HTTP_API_USERNAME"
+  HEADER_API_USER_EXTERNAL_ID ||= "HTTP_API_USER_EXTERNAL_ID"
+  HEADER_API_USER_ID ||= "HTTP_API_USER_ID"
   USER_API_KEY ||= "HTTP_USER_API_KEY"
   USER_API_CLIENT_ID ||= "HTTP_USER_API_CLIENT_ID"
   API_KEY_ENV ||= "_DISCOURSE_API"
@@ -40,7 +45,7 @@ class Auth::DefaultCurrentUserProvider
     request = @request
 
     user_api_key = @env[USER_API_KEY]
-    api_key = @env.blank? ? nil : request[API_KEY]
+    api_key = @env.blank? ? nil : @env[HEADER_API_KEY] || request[API_KEY]
 
     auth_token = request.cookies[TOKEN_COOKIE] unless user_api_key || api_key
 
@@ -81,12 +86,7 @@ class Auth::DefaultCurrentUserProvider
       raise Discourse::InvalidAccess.new(I18n.t('invalid_api_credentials'), nil, custom_message: "invalid_api_credentials") unless current_user
       raise Discourse::InvalidAccess if current_user.suspended? || !current_user.active
       @env[API_KEY_ENV] = true
-
-      # we do not run this rate limiter while profiling
-      if Rails.env != "profile"
-        limiter_min = RateLimiter.new(nil, "admin_api_min_#{api_key}", GlobalSetting.max_admin_api_reqs_per_key_per_minute, 60)
-        limiter_min.performed!
-      end
+      rate_limit_admin_api_requests(api_key)
     end
 
     # user api key handling
@@ -154,11 +154,14 @@ class Auth::DefaultCurrentUserProvider
     end
   end
 
-  def log_on_user(user, session, cookies)
-    @user_token = UserAuthToken.generate!(user_id: user.id,
-                                          user_agent: @env['HTTP_USER_AGENT'],
-                                          path: @env['REQUEST_PATH'],
-                                          client_ip: @request.ip)
+  def log_on_user(user, session, cookies, opts = {})
+    @user_token = UserAuthToken.generate!(
+      user_id: user.id,
+      user_agent: @env['HTTP_USER_AGENT'],
+      path: @env['REQUEST_PATH'],
+      client_ip: @request.ip,
+      staff: user.staff?,
+      impersonate: opts[:impersonate])
 
     cookies[TOKEN_COOKIE] = cookie_hash(@user_token.unhashed_auth_token)
     unstage_user(user)
@@ -223,6 +226,7 @@ class Auth::DefaultCurrentUserProvider
       @user_token.destroy
     end
 
+    cookies.delete('authentication_data')
     cookies.delete(TOKEN_COOKIE)
   end
 
@@ -243,7 +247,11 @@ class Auth::DefaultCurrentUserProvider
   end
 
   def should_update_last_seen?
-    if @request.xhr?
+    return false if Discourse.pg_readonly_mode?
+
+    api = !!(@env[API_KEY_ENV]) || !!(@env[USER_API_KEY_ENV])
+
+    if @request.xhr? || api
       @env["HTTP_DISCOURSE_VISIBLE".freeze] == "true".freeze
     else
       true
@@ -258,7 +266,16 @@ class Auth::DefaultCurrentUserProvider
         raise Discourse::InvalidAccess
       end
 
+      api_key.update_columns(last_used_at: Time.zone.now)
+
       if client_id.present? && client_id != api_key.client_id
+
+        # invalidate old dupe api key for client if needed
+        UserApiKey
+          .where(client_id: client_id, user_id: api_key.user_id)
+          .where('id <> ?', api_key.id)
+          .destroy_all
+
         api_key.update_columns(client_id: client_id)
       end
 
@@ -268,7 +285,7 @@ class Auth::DefaultCurrentUserProvider
 
   def lookup_api_user(api_key_value, request)
     if api_key = ApiKey.where(key: api_key_value).includes(:user).first
-      api_username = request["api_username"]
+      api_username = header_api_key? ? @env[HEADER_API_USERNAME] : request[API_USERNAME]
 
       if api_key.allowed_ips.present? && !api_key.allowed_ips.any? { |ip| ip.include?(request.ip) }
         Rails.logger.warn("[Unauthorized API Access] username: #{api_username}, IP address: #{request.ip}")
@@ -279,12 +296,29 @@ class Auth::DefaultCurrentUserProvider
         api_key.user if !api_username || (api_key.user.username_lower == api_username.downcase)
       elsif api_username
         User.find_by(username_lower: api_username.downcase)
-      elsif user_id = request["api_user_id"]
+      elsif user_id = header_api_key? ? @env[HEADER_API_USER_ID] : request["api_user_id"]
         User.find_by(id: user_id.to_i)
-      elsif external_id = request["api_user_external_id"]
+      elsif external_id = header_api_key? ? @env[HEADER_API_USER_EXTERNAL_ID] : request["api_user_external_id"]
         SingleSignOnRecord.find_by(external_id: external_id.to_s).try(:user)
       end
     end
+  end
+
+  private
+
+  def header_api_key?
+    !!@env[HEADER_API_KEY]
+  end
+
+  def rate_limit_admin_api_requests(api_key)
+    return if Rails.env == "profile"
+
+    RateLimiter.new(
+      nil,
+      "admin_api_min_#{api_key}",
+      GlobalSetting.max_admin_api_reqs_per_key_per_minute,
+      60
+    ).performed!
   end
 
 end

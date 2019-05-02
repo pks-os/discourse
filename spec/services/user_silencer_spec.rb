@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe UserSilencer do
@@ -110,6 +112,13 @@ describe UserSilencer do
     it "hides the topic if the post was the first post" do
       subject.silence
       expect(post.topic.reload).to_not be_visible
+    end
+
+    it "allows us to silence the user for a particular post" do
+      expect(UserSilencer.was_silenced_for?(post)).to eq(false)
+      UserSilencer.new(user, Discourse.system_user, post_id: post.id).silence
+      expect(user).to be_silenced
+      expect(UserSilencer.was_silenced_for?(post)).to eq(true)
     end
 
     it "doesn't hide posts if user is TL1" do

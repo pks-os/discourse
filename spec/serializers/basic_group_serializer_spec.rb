@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe BasicGroupSerializer do
@@ -31,16 +33,28 @@ describe BasicGroupSerializer do
     end
 
     describe 'group owner' do
-      let(:user) do
-        user = Fabricate(:user)
-        group.add_owner(user)
-        user
-      end
-
       it 'should include bio_raw' do
         expect(subject.as_json[:bio_raw]).to eq('testing')
       end
     end
+  end
+
+  describe '#automatic_membership_email_domains' do
+    let(:group) { Fabricate(:group, automatic_membership_email_domains: 'ilovediscourse.com', automatic_membership_retroactive: true) }
+    let(:admin_guardian) { Guardian.new(Fabricate(:admin)) }
+
+    it 'should include email domains for admin' do
+      subject = described_class.new(group, scope: admin_guardian, root: false, owner_group_ids: [group.id])
+      expect(subject.as_json[:automatic_membership_email_domains]).to eq('ilovediscourse.com')
+      expect(subject.as_json[:automatic_membership_retroactive]).to eq(true)
+    end
+
+    it 'should not include email domains for other users' do
+      subject = described_class.new(group, scope: guardian, root: false, owner_group_ids: [group.id])
+      expect(subject.as_json[:automatic_membership_email_domains]).to eq(nil)
+      expect(subject.as_json[:automatic_membership_retroactive]).to eq(nil)
+    end
+
   end
 
   describe '#has_messages' do

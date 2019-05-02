@@ -3,6 +3,16 @@ require_dependency 'enum'
 class SearchLog < ActiveRecord::Base
   validates_presence_of :term
 
+  belongs_to :user
+
+  attr_reader :ctr
+
+  def ctr
+    return 0 if click_through == 0 || searches == 0
+
+    ((click_through.to_f / searches.to_f) * 100).ceil(1)
+  end
+
   def self.search_types
     @search_types ||= Enum.new(
       header: 1,
@@ -79,13 +89,15 @@ class SearchLog < ActiveRecord::Base
     details = []
 
     result = SearchLog.select("COUNT(*) AS count, created_at::date AS date")
-      .where('term LIKE ?', term)
-      .where('created_at > ?', start_of(period))
+      .where(
+        'lower(term) = ? AND created_at > ?',
+        term.downcase, start_of(period)
+      )
 
     result = result.where('search_type = ?', search_types[search_type]) if search_type == :header || search_type == :full_page
     result = result.where('search_result_id IS NOT NULL') if search_type == :click_through_only
 
-    result.group(:term)
+    result
       .order("date")
       .group("date")
       .each do |record|
@@ -103,30 +115,37 @@ class SearchLog < ActiveRecord::Base
   end
 
   def self.trending(period = :all, search_type = :all)
-    result = SearchLog.select("term,
-       COUNT(*) AS searches,
-       SUM(CASE
-               WHEN search_result_id IS NOT NULL THEN 1
-               ELSE 0
-           END) AS click_through,
-       COUNT(DISTINCT ip_address) AS unique")
-      .where('created_at > ?', start_of(period))
-
-    result = result.where('search_type = ?', search_types[search_type]) unless search_type == :all
-    result = result.group(:term)
-      .order('COUNT(DISTINCT ip_address) DESC, COUNT(*) DESC')
-      .limit(100).to_a
+    SearchLog.trending_from(start_of(period), search_type: search_type)
   end
 
-  def self.start_of(period)
-    case period
-    when :yearly    then 1.year.ago
-    when :monthly   then 1.month.ago
-    when :quarterly then 3.months.ago
-    when :weekly    then 1.week.ago
-    when :daily     then 1.day.ago
-    else 1000.years.ago
+  def self.trending_from(start_date, options = {})
+    end_date = options[:end_date]
+    search_type = options[:search_type] || :all
+    limit = options[:limit] || 100
+
+    select_sql = <<~SQL
+      lower(term) term,
+      COUNT(*) AS searches,
+      SUM(CASE
+               WHEN search_result_id IS NOT NULL THEN 1
+               ELSE 0
+           END) AS click_through
+    SQL
+
+    result = SearchLog.select(select_sql)
+      .where('created_at > ?', start_date)
+
+    if end_date
+      result = result.where('created_at < ?', end_date)
     end
+
+    unless search_type == :all
+      result = result.where('search_type = ?', search_types[search_type])
+    end
+
+    result.group('lower(term)')
+      .order('searches DESC, click_through DESC, term ASC')
+      .limit(limit)
   end
 
   def self.clean_up
@@ -136,6 +155,21 @@ class SearchLog < ActiveRecord::Base
     end
     SearchLog.where('created_at < TIMESTAMP ?', SiteSetting.search_query_log_max_retention_days.days.ago).delete_all
   end
+
+  def self.start_of(period)
+    period =
+      case period
+      when :yearly    then 1.year.ago
+      when :monthly   then 1.month.ago
+      when :quarterly then 3.months.ago
+      when :weekly    then 1.week.ago
+      when :daily     then Time.zone.now
+      else 1000.years.ago
+      end
+
+    period&.to_date
+  end
+  private_class_method :start_of
 end
 
 # == Schema Information
@@ -150,4 +184,8 @@ end
 #  search_type        :integer          not null
 #  created_at         :datetime         not null
 #  search_result_type :integer
+#
+# Indexes
+#
+#  index_search_logs_on_created_at  (created_at)
 #

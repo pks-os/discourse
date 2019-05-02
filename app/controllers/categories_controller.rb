@@ -9,6 +9,7 @@ class CategoriesController < ApplicationController
   skip_before_action :check_xhr, only: [:index, :categories_and_latest, :categories_and_top, :redirect]
 
   def redirect
+    return if handle_permalink("/category/#{params[:path]}")
     redirect_to path("/c/#{params[:path]}")
   end
 
@@ -33,7 +34,11 @@ class CategoriesController < ApplicationController
     )
     @category_list.draft = Draft.get(current_user, Draft::NEW_TOPIC, @category_list.draft_sequence) if current_user
 
-    @title = "#{I18n.t('js.filters.categories.title')} - #{SiteSetting.title}" unless category_options[:is_homepage]
+    if category_options[:is_homepage] && SiteSetting.short_site_description.present?
+      @title = "#{SiteSetting.title} - #{SiteSetting.short_site_description}"
+    elsif !category_options[:is_homepage]
+      @title = "#{I18n.t('js.filters.categories.title')} - #{SiteSetting.title}"
+    end
 
     respond_to do |format|
       format.html do
@@ -48,11 +53,13 @@ class CategoriesController < ApplicationController
 
         if style == "categories_and_latest_topics".freeze
           @topic_list = TopicQuery.new(current_user, topic_options).list_latest
+          @topic_list.more_topics_url = url_for(public_send("latest_path"))
         elsif style == "categories_and_top_topics".freeze
           @topic_list = TopicQuery.new(nil, topic_options).list_top_for(SiteSetting.top_page_default_timeframe.to_sym)
+          @topic_list.more_topics_url = url_for(public_send("top_path"))
         end
 
-        if @topic_list.present?
+        if @topic_list.present? && @topic_list.topics.present?
           store_preloaded(
             @topic_list.preload_key,
             MultiJson.dump(TopicListSerializer.new(@topic_list, scope: guardian))
@@ -116,10 +123,14 @@ class CategoriesController < ApplicationController
 
   def create
     guardian.ensure_can_create!(Category)
-
     position = category_params.delete(:position)
 
-    @category = Category.create(category_params.merge(user: current_user))
+    @category =
+      begin
+        Category.new(category_params.merge(user: current_user))
+      rescue ArgumentError => e
+        return render json: { errors: [e.message] }, status: 422
+      end
 
     if @category.save
       @category.move_to(position.to_i) if position
@@ -130,7 +141,7 @@ class CategoriesController < ApplicationController
 
       render_serialized(@category, CategorySerializer)
     else
-      return render_json_error(@category) unless @category.save
+      return render_json_error(@category)
     end
   end
 
@@ -143,9 +154,8 @@ class CategoriesController < ApplicationController
       category_params.delete(:position)
 
       # properly null the value so the database constraint doesn't catch us
-      if category_params.has_key?(:email_in) && category_params[:email_in].blank?
-        category_params[:email_in] = nil
-      end
+      category_params[:email_in] = nil if category_params[:email_in]&.blank?
+      category_params[:minimum_required_tags] = 0 if category_params[:minimum_required_tags]&.blank?
 
       old_permissions = cat.permissions_params
 
@@ -165,7 +175,7 @@ class CategoriesController < ApplicationController
 
     custom_slug = params[:slug].to_s
 
-    if custom_slug.present? && @category.update_attributes(slug: custom_slug)
+    if custom_slug.present? && @category.update(slug: custom_slug)
       render json: success_json
     else
       render_json_error(@category)
@@ -259,35 +269,44 @@ class CategoriesController < ApplicationController
         params[:allowed_tag_groups] ||= []
       end
 
-      params.permit(*required_param_keys,
-                      :position,
-                      :email_in,
-                      :email_in_allow_strangers,
-                      :mailinglist_mirror,
-                      :suppress_from_latest,
-                      :all_topics_wiki,
-                      :parent_category_id,
-                      :auto_close_hours,
-                      :auto_close_based_on_last_post,
-                      :uploaded_logo_id,
-                      :uploaded_background_id,
-                      :slug,
-                      :allow_badges,
-                      :topic_template,
-                      :sort_order,
-                      :sort_ascending,
-                      :topic_featured_link_allowed,
-                      :show_subcategory_list,
-                      :num_featured_topics,
-                      :default_view,
-                      :subcategory_list_style,
-                      :default_top_period,
-                      :minimum_required_tags,
-                      :navigate_to_first_post_after_read,
-                      custom_fields: [params[:custom_fields].try(:keys)],
-                      permissions: [*p.try(:keys)],
-                      allowed_tags: [],
-                      allowed_tag_groups: [])
+      result = params.permit(
+        *required_param_keys,
+        :position,
+        :email_in,
+        :email_in_allow_strangers,
+        :mailinglist_mirror,
+        :suppress_from_latest,
+        :all_topics_wiki,
+        :parent_category_id,
+        :auto_close_hours,
+        :auto_close_based_on_last_post,
+        :uploaded_logo_id,
+        :uploaded_background_id,
+        :slug,
+        :allow_badges,
+        :topic_template,
+        :sort_order,
+        :sort_ascending,
+        :topic_featured_link_allowed,
+        :show_subcategory_list,
+        :num_featured_topics,
+        :default_view,
+        :subcategory_list_style,
+        :default_top_period,
+        :minimum_required_tags,
+        :navigate_to_first_post_after_read,
+        :search_priority,
+        :allow_global_tags,
+        custom_fields: [params[:custom_fields].try(:keys)],
+        permissions: [*p.try(:keys)],
+        allowed_tags: [],
+        allowed_tag_groups: []
+      )
+      if SiteSetting.enable_category_group_review?
+        result[:reviewable_by_group_id] = Group.find_by(name: params[:reviewable_by_group_name])&.id
+      end
+
+      result
     end
   end
 
@@ -305,6 +324,7 @@ class CategoriesController < ApplicationController
       params[:include_topics] ||
       (parent_category && parent_category.subcategory_list_includes_topics?) ||
       style == "categories_with_featured_topics".freeze ||
+      style == "categories_boxes_with_topics".freeze ||
       style == "categories_with_top_topics".freeze
   end
 end

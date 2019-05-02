@@ -6,6 +6,11 @@ import { setting } from "discourse/lib/computed";
 import { popupAjaxError } from "discourse/lib/ajax-error";
 import showModal from "discourse/lib/show-modal";
 import { findAll } from "discourse/models/login-method";
+import { ajax } from "discourse/lib/ajax";
+import { userPath } from "discourse/lib/url";
+
+// Number of tokens shown by default.
+const DEFAULT_AUTH_TOKENS_COUNT = 2;
 
 export default Ember.Controller.extend(
   CanCheckEmails,
@@ -21,8 +26,10 @@ export default Ember.Controller.extend(
 
     passwordProgress: null,
 
-    cannotDeleteAccount: Em.computed.not("currentUser.can_delete_account"),
-    deleteDisabled: Em.computed.or(
+    showAllAuthTokens: false,
+
+    cannotDeleteAccount: Ember.computed.not("currentUser.can_delete_account"),
+    deleteDisabled: Ember.computed.or(
       "model.isSaving",
       "deleting",
       "cannotDeleteAccount"
@@ -48,11 +55,15 @@ export default Ember.Controller.extend(
       return availableTitles.length > 0;
     },
 
-    @computed()
-    canChangePassword() {
-      return (
-        !this.siteSettings.enable_sso && this.siteSettings.enable_local_logins
-      );
+    @computed("model.is_anonymous")
+    canChangePassword(isAnonymous) {
+      if (isAnonymous) {
+        return false;
+      } else {
+        return (
+          !this.siteSettings.enable_sso && this.siteSettings.enable_local_logins
+        );
+      }
     },
 
     @computed("model.associated_accounts")
@@ -85,12 +96,46 @@ export default Ember.Controller.extend(
       return userId !== this.get("currentUser.id");
     },
 
-    @computed()
-    canUpdateAssociatedAccounts() {
+    @computed(
+      "model.second_factor_enabled",
+      "canCheckEmails",
+      "model.is_anonymous"
+    )
+    canUpdateAssociatedAccounts(
+      secondFactorEnabled,
+      canCheckEmails,
+      isAnonymous
+    ) {
+      if (secondFactorEnabled || !canCheckEmails || isAnonymous) {
+        return false;
+      }
+
       return (
         findAll(this.siteSettings, this.capabilities, this.site.isMobileDevice)
           .length > 0
       );
+    },
+
+    @computed("showAllAuthTokens", "model.user_auth_tokens")
+    authTokens(showAllAuthTokens, tokens) {
+      tokens.sort((a, b) => {
+        if (a.is_active) {
+          return -1;
+        } else if (b.is_active) {
+          return 1;
+        } else {
+          return b.seen_at.localeCompare(a.seen_at);
+        }
+      });
+
+      return showAllAuthTokens
+        ? tokens
+        : tokens.slice(0, DEFAULT_AUTH_TOKENS_COUNT);
+    },
+
+    @computed("model.user_auth_tokens")
+    canShowAllAuthTokens(tokens) {
+      return tokens.length > DEFAULT_AUTH_TOKENS_COUNT;
     },
 
     actions: {
@@ -172,10 +217,6 @@ export default Ember.Controller.extend(
         bootbox.dialog(message, buttons, { classes: "delete-account" });
       },
 
-      showTwoFactorModal() {
-        showModal("second-factor-intro");
-      },
-
       revokeAccount(account) {
         const model = this.get("model");
         this.set("revoking", true);
@@ -194,8 +235,28 @@ export default Ember.Controller.extend(
           });
       },
 
+      toggleShowAllAuthTokens() {
+        this.set("showAllAuthTokens", !this.get("showAllAuthTokens"));
+      },
+
+      revokeAuthToken(token) {
+        ajax(
+          userPath(
+            `${this.get("model.username_lower")}/preferences/revoke-auth-token`
+          ),
+          {
+            type: "POST",
+            data: token ? { token_id: token.id } : {}
+          }
+        );
+      },
+
+      showToken(token) {
+        showModal("auth-token", { model: token });
+      },
+
       connectAccount(method) {
-        method.doLogin();
+        method.doLogin(true);
       }
     }
   }

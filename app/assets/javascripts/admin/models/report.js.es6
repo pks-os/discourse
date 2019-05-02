@@ -8,7 +8,7 @@ import { renderAvatar } from "discourse/helpers/user-avatar";
 
 // Change this line each time report format change
 // and you want to ensure cache is reset
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 const Report = Discourse.Model.extend({
   average: false,
@@ -62,7 +62,7 @@ const Report = Discourse.Model.extend({
       let d,
         sum = 0,
         count = 0;
-      _.each(this.data, datum => {
+      this.data.forEach(datum => {
         d = moment(datum.x);
         if (d >= earliestDate && d <= latestDate) {
           sum += datum.y;
@@ -76,25 +76,35 @@ const Report = Discourse.Model.extend({
     }
   },
 
-  todayCount: function() {
+  @computed("data", "average")
+  todayCount() {
     return this.valueAt(0);
-  }.property("data", "average"),
-  yesterdayCount: function() {
-    return this.valueAt(1);
-  }.property("data", "average"),
-  sevenDaysAgoCount: function() {
-    return this.valueAt(7);
-  }.property("data", "average"),
-  thirtyDaysAgoCount: function() {
-    return this.valueAt(30);
-  }.property("data", "average"),
+  },
 
-  lastSevenDaysCount: function() {
+  @computed("data", "average")
+  yesterdayCount() {
+    return this.valueAt(1);
+  },
+
+  @computed("data", "average")
+  sevenDaysAgoCount() {
+    return this.valueAt(7);
+  },
+
+  @computed("data", "average")
+  thirtyDaysAgoCount() {
+    return this.valueAt(30);
+  },
+
+  @computed("data", "average")
+  lastSevenDaysCount() {
     return this.averageCount(7, this.valueFor(1, 7));
-  }.property("data", "average"),
-  lastThirtyDaysCount: function() {
+  },
+
+  @computed("data", "average")
+  lastThirtyDaysCount() {
     return this.averageCount(30, this.valueFor(1, 30));
-  }.property("data", "average"),
+  },
 
   averageCount(count, value) {
     return this.get("average") ? value / count : value;
@@ -116,7 +126,7 @@ const Report = Discourse.Model.extend({
 
   @computed("data")
   currentTotal(data) {
-    return _.reduce(data, (cur, pair) => cur + pair.y, 0);
+    return data.reduce((cur, pair) => cur + pair.y, 0);
   },
 
   @computed("data", "currentTotal")
@@ -264,7 +274,13 @@ const Report = Discourse.Model.extend({
         mainProperty,
         type,
         compute: (row, opts = {}) => {
-          const value = row[mainProperty];
+          let value = null;
+
+          if (opts.useSortProperty) {
+            value = row[label.sort_property || mainProperty];
+          } else {
+            value = row[mainProperty];
+          }
 
           if (type === "user") return this._userLabel(label.properties, row);
           if (type === "post") return this._postLabel(label.properties, row);
@@ -272,12 +288,17 @@ const Report = Discourse.Model.extend({
           if (type === "seconds") return this._secondsLabel(value);
           if (type === "link") return this._linkLabel(label.properties, row);
           if (type === "percent") return this._percentLabel(value);
+          if (type === "bytes") return this._bytesLabel(value);
           if (type === "number") {
             return this._numberLabel(value, opts);
           }
           if (type === "date") {
-            const date = moment(value, "YYYY-MM-DD");
+            const date = moment(value);
             if (date.isValid()) return this._dateLabel(value, date);
+          }
+          if (type === "precise_date") {
+            const date = moment(value);
+            if (date.isValid()) return this._dateLabel(value, date, "LLL");
           }
           if (type === "text") return this._textLabel(value);
 
@@ -285,7 +306,7 @@ const Report = Discourse.Model.extend({
             value,
             type,
             property: mainProperty,
-            formatedValue: value ? escapeExpression(value) : "-"
+            formatedValue: value ? escapeExpression(value) : "—"
           };
         }
       };
@@ -304,7 +325,7 @@ const Report = Discourse.Model.extend({
         avatar_template: row[properties.avatar]
       });
 
-      const href = `/admin/users/${userId}/${username}`;
+      const href = Discourse.getURL(`/admin/users/${userId}/${username}`);
 
       const avatarImg = renderAvatar(user, {
         imageSize: "tiny",
@@ -318,7 +339,7 @@ const Report = Discourse.Model.extend({
 
     return {
       value: username,
-      formatedValue: username ? formatedValue(username) : "-"
+      formatedValue: username ? formatedValue(username) : "—"
     };
   },
 
@@ -327,13 +348,13 @@ const Report = Discourse.Model.extend({
 
     const formatedValue = () => {
       const topicId = row[properties.id];
-      const href = `/t/-/${topicId}`;
-      return `<a href='${href}'>${topicTitle}</a>`;
+      const href = Discourse.getURL(`/t/-/${topicId}`);
+      return `<a href='${href}'>${escapeExpression(topicTitle)}</a>`;
     };
 
     return {
       value: topicTitle,
-      formatedValue: topicTitle ? formatedValue() : "-"
+      formatedValue: topicTitle ? formatedValue() : "—"
     };
   },
 
@@ -341,12 +362,15 @@ const Report = Discourse.Model.extend({
     const postTitle = row[properties.truncated_raw];
     const postNumber = row[properties.number];
     const topicId = row[properties.topic_id];
-    const href = `/t/-/${topicId}/${postNumber}`;
+    const href = Discourse.getURL(`/t/-/${topicId}/${postNumber}`);
 
     return {
       property: properties.title,
       value: postTitle,
-      formatedValue: `<a href='${href}'>${postTitle}</a>`
+      formatedValue:
+        postTitle && href
+          ? `<a href='${href}'>${escapeExpression(postTitle)}</a>`
+          : "—"
     };
   },
 
@@ -360,7 +384,7 @@ const Report = Discourse.Model.extend({
   _percentLabel(value) {
     return {
       value,
-      formatedValue: value ? `${value}%` : "-"
+      formatedValue: value ? `${value}%` : "—"
     };
   },
 
@@ -373,14 +397,21 @@ const Report = Discourse.Model.extend({
 
     return {
       value,
-      formatedValue: value ? formatedValue() : "-"
+      formatedValue: value ? formatedValue() : "—"
     };
   },
 
-  _dateLabel(value, date) {
+  _bytesLabel(value) {
     return {
       value,
-      formatedValue: value ? date.format("LL") : "-"
+      formatedValue: I18n.toHumanSize(value)
+    };
+  },
+
+  _dateLabel(value, date, format = "LL") {
+    return {
+      value,
+      formatedValue: value ? date.format(format) : "—"
     };
   },
 
@@ -389,13 +420,13 @@ const Report = Discourse.Model.extend({
 
     return {
       value,
-      formatedValue: value ? escaped : "-"
+      formatedValue: value ? escaped : "—"
     };
   },
 
   _linkLabel(properties, row) {
     const property = properties[0];
-    const value = row[property];
+    const value = Discourse.getURL(row[property]);
     const formatedValue = (href, anchor) => {
       return `<a href="${escapeExpression(href)}">${escapeExpression(
         anchor
@@ -404,7 +435,7 @@ const Report = Discourse.Model.extend({
 
     return {
       value,
-      formatedValue: value ? formatedValue(value, row[properties[1]]) : "-"
+      formatedValue: value ? formatedValue(value, row[properties[1]]) : "—"
     };
   },
 
@@ -439,7 +470,7 @@ const Report = Discourse.Model.extend({
       case "high-trending-down":
         return higherIsBetter ? "angle-double-down" : "angle-double-up";
       default:
-        return null;
+        return "minus";
     }
   }
 });
@@ -460,11 +491,27 @@ Report.reopenClass({
         .utc(report[endDate])
         .locale("en")
         .format("YYYY-MM-DD");
-      report[filledField] = fillMissingDates(
-        JSON.parse(JSON.stringify(report[dataField])),
-        startDateFormatted,
-        endDateFormatted
-      );
+
+      if (report.modes[0] === "stacked_chart") {
+        report[filledField] = report[dataField].map(rep => {
+          return {
+            req: rep.req,
+            label: rep.label,
+            color: rep.color,
+            data: fillMissingDates(
+              JSON.parse(JSON.stringify(rep.data)),
+              startDateFormatted,
+              endDateFormatted
+            )
+          };
+        });
+      } else {
+        report[filledField] = fillMissingDates(
+          JSON.parse(JSON.stringify(report[dataField])),
+          startDateFormatted,
+          endDateFormatted
+        );
+      }
     }
   },
 

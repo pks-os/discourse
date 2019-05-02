@@ -7,7 +7,6 @@
 
 cs:
   site_settings:
-    discourse_narrative_bot_enabled: 'Zapnout Discourse robota průvodce'
     disable_discourse_narrative_bot_welcome_post: "Vypnout uvítací příspěvek od Discourse robota průvodce"
     discourse_narrative_bot_ignored_usernames: "Uživatelská jména, která by měl Discourse robot průvodce ignorovat"
     discourse_narrative_bot_disable_public_replies: "Vypnout veřejné odpovědi Discourse robota průvodce"
@@ -90,7 +89,6 @@ cs:
         '8': "Vypadá to dobře"
         '9': "Ano"
         '10': "Dle znamení ano"
-        '11': "Odpověď nejistá, zeptej se znovu"
         '12': "Zeptej se později"
         '13': "To ti teď raději neřeknu"
         '14': "To nyní nedokážu předpovědět"
@@ -122,6 +120,16 @@ cs:
     new_user_narrative:
       reset_trigger: "nový uživatel"
       hello:
-        title: ":robot: Zdravím!"
+        message: |-
+          Díky, že jste se rozhodli zaregistrovat do fóra %{title} a vítejte!
+
+          - Já jsem jenom robot, ale [náš přátelský tým](%{base_uri}/about) je tu taky připraven pomoct, kdykoliv budete potřebovat.
+
+          - Z bezpečnostních důvodů dočasně omezujeme práva nově registrovaných uživatelů. Jak Tě budeme znát víc, budeš dostávat nové dovednosti a [odznaky](%{base_uri}/badges)).
+
+          - Na našem fóru ctíme [zásady slušného chování](%{base_uri}/guidelines) za každých podmínek.
+      bookmark:
+        instructions: |-
+          Pokud by ses chtěl dozvědět víc, klikni na <img src="%{base_uri}/plugins/discourse-narrative-bot/images/font-awesome-ellipsis.png" width="16" height="16"> níže  a <img src="%{base_uri}/plugins/discourse-narrative-bot/images/font-awesome-bookmark.png" width="16" height="16"> **ulož si tuto soukromou zprávu do záložek**.  Pokud to uděláš, je možný, že tam v budoucnu najdeš :gift:!
     advanced_user_narrative:
       reset_trigger: 'pokročilý uživatel'

@@ -7,7 +7,6 @@
 
 bs_BA:
   site_settings:
-    discourse_narrative_bot_enabled: 'Uključi Discourse Narrative bot'
     disable_discourse_narrative_bot_welcome_post: "Isključi objavu dobrodošlice od strane Discourse Narrative bot"
     discourse_narrative_bot_ignored_usernames: "Korisnička imena koja Discourse Narrative bot bi trebao ignorisati"
     discourse_narrative_bot_disable_public_replies: "Isključi javne odgovore od strane Discourse Narrative bot"
@@ -92,7 +91,6 @@ bs_BA:
         '8': "Izgled dobar"
         '9': "Da"
         '10': "Signali ukazuju na da"
-        '11': "Odgovor je nejasan, pokušaj ponovo"
         '12': "Upitaj ponovo kasnije"
         '13': "Bolje da vam ne kažem odmah"
         '14': "Ne mogu predvodjeti sada"
@@ -128,3 +126,5 @@ bs_BA:
           Hej, hvala za odgovor!
 
           Nažalost, kako sam programiran ograničenim mogućnostima, ne mogu jasno razumjeti na što ste mislili. :frowning:
+    new_user_narrative:
+      reset_trigger: "novi korisnik"

@@ -17,10 +17,8 @@ he:
         one: "מספר הצבעות כולל"
         two: "מספר הצבעות כולל"
         many: "מספר הצבעות כולל"
-        other: "מספר הצבעות כולל"
+        other: "מספר הצבעות"
       average_rating: "דירוג ממוצע: <strong>%{average}</strong>."
-      public:
-        title: "הצבעות הן פומביות."
       multiple:
         help:
           at_least_min_options:
@@ -71,6 +69,8 @@ he:
           regular: בחירה בודדת
           multiple: בחירה מרובה
           number: ציון מספרי
+        poll_result:
+          label: תוצאות
         poll_config:
           max: מקסימום
           min: מינימום

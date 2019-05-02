@@ -72,7 +72,7 @@ module DiscourseNarrativeBot
           </linearGradient>
         </defs>
         <title>
-          test_cert
+          #{I18n.t('discourse_narrative_bot.new_user_narrative.title')}
         </title>
         <g id="Layer_1" data-name="Layer 1">
           <path fill="url(#GradientFill_1)" d="M0 0h538.583v384.97H0z"/>
@@ -568,10 +568,10 @@ module DiscourseNarrativeBot
     end
 
     def logo_group(size, width, height)
-      return unless SiteSetting.logo_small_url.present?
+      return unless SiteSetting.site_logo_small_url.present?
 
       begin
-        uri = URI(SiteSetting.logo_small_url)
+        uri = URI(SiteSetting.site_logo_small_url)
 
         logo_uri =
           if uri.host.blank? || uri.scheme.blank?

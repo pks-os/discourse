@@ -317,7 +317,7 @@ export default RestModel.extend({
           });
 
           delete this.get("gaps.before")[postId];
-          this.get("stream").enumerableContentDidChange();
+          this.get("stream").arrayContentDidChange();
           this.get("postsWithPlaceholders").arrayContentDidChange(
             origIdx,
             0,
@@ -340,7 +340,7 @@ export default RestModel.extend({
       stream.pushObjects(gap);
       return this.appendMore().then(() => {
         delete this.get("gaps.after")[postId];
-        this.get("stream").enumerableContentDidChange();
+        this.get("stream").arrayContentDidChange();
       });
     }
     return Ember.RSVP.resolve();
@@ -711,6 +711,16 @@ export default RestModel.extend({
     return resolved;
   },
 
+  postForPostNumber(postNumber) {
+    if (!this.get("hasPosts")) {
+      return;
+    }
+
+    return this.get("posts").find(p => {
+      return p.get("post_number") === postNumber;
+    });
+  },
+
   /**
     Returns the closest post given a postNumber that may not exist in the stream.
     For example, if the user asks for a post that's deleted or otherwise outside the range.
@@ -897,10 +907,13 @@ export default RestModel.extend({
   },
 
   fetchNextWindow(postNumber, asc, callback) {
+    let includeSuggested = !this.get("topic.suggested_topics");
+
     const url = `/t/${this.get("topic.id")}/posts.json`;
     let data = {
       post_number: postNumber,
-      asc: asc
+      asc: asc,
+      include_suggested: includeSuggested
     };
 
     data = _.merge(data, this.get("streamFilters"));
@@ -940,8 +953,10 @@ export default RestModel.extend({
       return Ember.RSVP.resolve([]);
     }
 
+    let includeSuggested = !this.get("topic.suggested_topics");
+
     const url = "/t/" + this.get("topic.id") + "/posts.json";
-    const data = { post_ids: postIds };
+    const data = { post_ids: postIds, include_suggested: includeSuggested };
     const store = this.store;
 
     return ajax(url, { data }).then(result => {

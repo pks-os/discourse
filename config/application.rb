@@ -1,18 +1,24 @@
 # frozen_string_literal: true
 
+# note, we require 2.5.2 and up cause 2.5.1 had some mail bugs we no longer
+# monkey patch, so this avoids people booting with this problem version
 begin
-  if !RUBY_VERSION.match?(/^2\.[456]/)
-    STDERR.puts "Discourse requires Ruby 2.4.0 or up"
+  if !RUBY_VERSION.match?(/^2\.(([67])|(5\.[2-9]))/)
+    STDERR.puts "Discourse requires Ruby 2.5.2 or up"
     exit 1
   end
 rescue
   # no String#match?
-  STDERR.puts "Discourse requires Ruby 2.4.0 or up"
+  STDERR.puts "Discourse requires Ruby 2.5.2 or up"
   exit 1
 end
 
 require File.expand_path('../boot', __FILE__)
-require 'rails/all'
+require 'active_record/railtie'
+require 'action_controller/railtie'
+require 'action_view/railtie'
+require 'action_mailer/railtie'
+require 'sprockets/railtie'
 
 # Plugin related stuff
 require_relative '../lib/discourse_event'
@@ -31,7 +37,7 @@ GlobalSetting.load_defaults
 
 require 'pry-rails' if Rails.env.development?
 
-if defined?(Bundler)
+if defined?(Bundler) && !Rails.env.production?
   Bundler.require(*Rails.groups(assets: %w(development test profile)))
 end
 
@@ -49,12 +55,15 @@ module Discourse
     # Application configuration should go into files in config/initializers
     # -- all .rb files in that directory are automatically loaded.
 
-    require 'discourse'
-    require 'es6_module_transpiler/rails'
-    require 'js_locale_helper'
+    # this pattern is somewhat odd but the reloader gets very
+    # confused here if we load the deps without `lib` it thinks
+    # discourse.rb is under the discourse folder incorrectly
+    require_dependency 'lib/discourse'
+    require_dependency 'lib/es6_module_transpiler/rails'
+    require_dependency 'lib/js_locale_helper'
 
     # tiny file needed by site settings
-    require 'highlight_js/highlight_js'
+    require_dependency 'lib/highlight_js/highlight_js'
 
     # mocha hates us, active_support/testing/mochaing.rb line 2 is requiring the wrong
     #  require, patched in source, on upgrade remove this
@@ -89,6 +98,7 @@ module Discourse
     if Rails.env == "development" || Rails.env == "test"
       config.assets.paths << "#{config.root}/test/javascripts"
       config.assets.paths << "#{config.root}/test/stylesheets"
+      config.assets.paths << "#{config.root}/node_modules"
     end
 
     # Allows us to skip minifincation on some files
@@ -113,6 +123,16 @@ module Discourse
       plugin-third-party.js
       markdown-it-bundle.js
       service-worker.js
+      google-tag-manager.js
+      google-universal-analytics.js
+      preload-application-data.js
+      print-page.js
+      omniauth-complete.js
+      activate-account.js
+      auto-redirect.js
+      wizard-start.js
+      onpopstate-handler.js
+      embed-application.js
     }
 
     # Precompile all available locales
@@ -182,6 +202,14 @@ module Discourse
     # supports etags (post 1.7)
     config.middleware.delete Rack::ETag
 
+    unless Rails.env.development?
+      require 'middleware/enforce_hostname'
+      config.middleware.insert_after Rack::MethodOverride, Middleware::EnforceHostname
+    end
+
+    require 'content_security_policy/middleware'
+    config.middleware.swap ActionDispatch::ContentSecurityPolicy::Middleware, ContentSecurityPolicy::Middleware
+
     require 'middleware/discourse_public_exceptions'
     config.exceptions_app = Middleware::DiscoursePublicExceptions.new(Rails.public_path)
 
@@ -221,6 +249,7 @@ module Discourse
     end
 
     require_dependency 'stylesheet/manager'
+    require_dependency 'svg_sprite/svg_sprite'
 
     config.after_initialize do
       # require common dependencies that are often required by plugins

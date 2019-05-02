@@ -70,7 +70,7 @@ QUnit.test("converts heading tags", assert => {
 });
 
 QUnit.test("converts ul list tag", assert => {
-  const html = `
+  let html = `
   <ul>
     <li>Item 1</li>
     <li>
@@ -84,7 +84,20 @@ QUnit.test("converts ul list tag", assert => {
     <li>Item 3</li>
   </ul>
   `;
-  const markdown = `* Item 1\n* Item 2\n  * Sub Item 1\n  * Sub Item 2\n\n  * Sub Item 3\n    * Sub *Sub* Item 1\n    * Sub **Sub** Item 2\n* Item 3`;
+  let markdown = `* Item 1\n* Item 2\n  * Sub Item 1\n  * Sub Item 2\n  * Sub Item 3\n    * Sub *Sub* Item 1\n    * Sub **Sub** Item 2\n* Item 3`;
+  assert.equal(toMarkdown(html), markdown);
+
+  html = `
+<ul>
+  <li><p><span>Bullets at level 1</span></p></li>
+  <li><p><span>Bullets at level 1</span></p></li>  <ul>    <li><p><span>Bullets at level 2</span></p></li>    <li><p><span>Bullets at level 2</span></p></li>    <ul>      <li><p><span>Bullets at level 3</span></p></li>    </ul>    <li><p><span>Bullets at level 2</span></p></li>  </ul>  <li><p><span>Bullets at level 1</span></p></li></ul>  `;
+  markdown = `* Bullets at level 1
+* Bullets at level 1
+  * Bullets at level 2
+  * Bullets at level 2
+    * Bullets at level 3
+  * Bullets at level 2
+* Bullets at level 1`;
   assert.equal(toMarkdown(html), markdown);
 });
 
@@ -311,6 +324,46 @@ QUnit.test("keeps mention/hash class", assert => {
   `;
 
   const markdown = `User mention: @discourse\n\nGroup mention: @discourse-group\n\nCategory link: #foo\n\nSub-category link: #foo:bar`;
+
+  assert.equal(toMarkdown(html), markdown);
+});
+
+QUnit.test("keeps emoji and removes click count", assert => {
+  const html = `
+    <p>
+      A <a href="http://example.com">link</a><span class="badge badge-notification clicks" title="1 click">1</span> with click count
+      and <img class="emoji" title=":boom:" src="https://d11a6trkgmumsb.cloudfront.net/images/emoji/twitter/boom.png?v=5" alt=":boom:" /> emoji.
+    </p>
+  `;
+
+  const markdown = `A [link](http://example.com) with click count and :boom: emoji.`;
+
+  assert.equal(toMarkdown(html), markdown);
+});
+
+QUnit.test("keeps emoji syntax for custom emoji", assert => {
+  const html = `
+    <p>
+      <img class="emoji emoji-custom" title=":custom_emoji:" src="https://d11a6trkgmumsb.cloudfront.net/images/emoji/custom_emoji" alt=":custom_emoji:" />
+    </p>
+  `;
+
+  const markdown = `:custom_emoji:`;
+
+  assert.equal(toMarkdown(html), markdown);
+});
+
+QUnit.test("converts image lightboxes to markdown", assert => {
+  let html = `
+  <a class="lightbox" href="https://d11a6trkgmumsb.cloudfront.net/uploads/default/original/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba.jpeg" data-download-href="https://d11a6trkgmumsb.cloudfront.net/uploads/default/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba" title="sherlock3_sig.jpg" rel="nofollow noopener"><img src="https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_689x459.jpeg" alt="sherlock3_sig" width="689" height="459" class="d-lazyload" srcset="https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_689x459.jpeg, https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_1033x688.jpeg 1.5x, https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_1378x918.jpeg 2x"><div class="meta">
+  <span class="filename">sherlock3_sig.jpg</span><span class="informations">5496×3664 2 MB</span><span class="expand"></span>
+  </div></a>
+  `;
+  const markdown = `![sherlock3_sig.jpg](https://d11a6trkgmumsb.cloudfront.net/uploads/default/original/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba.jpeg)`;
+
+  assert.equal(toMarkdown(html), markdown);
+
+  html = `<a class="lightbox" href="https://d11a6trkgmumsb.cloudfront.net/uploads/default/original/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba.jpeg" data-download-href="https://d11a6trkgmumsb.cloudfront.net/uploads/default/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba" title="sherlock3_sig.jpg" rel="nofollow noopener"><img src="https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_689x459.jpeg" alt="sherlock3_sig" width="689" height="459" class="d-lazyload" srcset="https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_689x459.jpeg, https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_1033x688.jpeg 1.5x, https://d11a6trkgmumsb.cloudfront.net/uploads/default/optimized/1X/8hkjhk7692f6afed3cb99d43ab2abd4e30aa8cba_2_1378x918.jpeg 2x"></a>`;
 
   assert.equal(toMarkdown(html), markdown);
 });

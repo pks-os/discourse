@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rails_helper"
 
 describe HasCustomFields do
@@ -185,6 +187,47 @@ describe HasCustomFields do
 
       expect(test_item.custom_fields).to eq("jack" => "black", "bob" => "marley")
       expect(test_item2.custom_fields).to eq("sixto" => "rodriguez", "de" => "la playa")
+    end
+
+    it "supports arrays in json fields" do
+      field_type = "json_array"
+      CustomFieldsTestItem.register_custom_field_type(field_type, :json)
+
+      item = CustomFieldsTestItem.new
+      item.custom_fields = {
+        "json_array" => [{ a: "test" }, { b: "another" }]
+      }
+      item.save
+
+      item.reload
+
+      expect(item.custom_fields[field_type]).to eq(
+        [{ "a" => "test" }, { "b" => "another" }]
+      )
+
+      item.custom_fields["json_array"] = ['a', 'b']
+      item.save
+
+      item.reload
+
+      expect(item.custom_fields[field_type]).to eq(["a", "b"])
+    end
+
+    it "will not fail to load custom fields if json is corrupt" do
+
+      field_type = "bad_json"
+      CustomFieldsTestItem.register_custom_field_type(field_type, :json)
+
+      item = CustomFieldsTestItem.create!
+
+      CustomFieldsTestItemCustomField.create!(
+        custom_fields_test_item_id: item.id,
+        name: field_type,
+        value: "{test"
+      )
+
+      item = item.reload
+      expect(item.custom_fields[field_type]).to eq({})
     end
 
     it "supports bulk retrieval with a list of ids" do

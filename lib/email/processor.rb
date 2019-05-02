@@ -1,6 +1,7 @@
 module Email
 
   class Processor
+    attr_reader :receiver
 
     def initialize(mail, retry_on_rate_limit = true)
       @mail = mail
@@ -17,11 +18,9 @@ module Email
         @receiver.process!
       rescue RateLimiter::LimitExceeded
         @retry_on_rate_limit ? Jobs.enqueue(:process_email, mail: @mail) : raise
-      rescue Email::Receiver::BouncedEmailError => e
-        # never reply to bounced emails
-        log_email_process_failure(@mail, e)
-        set_incoming_email_rejection_message(@receiver.incoming_email, I18n.t("emails.incoming.errors.bounced_email_error"))
       rescue => e
+        return handle_bounce(e) if @receiver.is_bounce?
+
         log_email_process_failure(@mail, e)
         incoming_email = @receiver.try(:incoming_email)
         rejection_message = handle_failure(@mail, e)
@@ -32,6 +31,12 @@ module Email
     end
 
     private
+
+    def handle_bounce(e)
+      # never reply to bounced emails
+      log_email_process_failure(@mail, e)
+      set_incoming_email_rejection_message(@receiver.incoming_email, I18n.t("emails.incoming.errors.bounced_email_error"))
+    end
 
     def handle_failure(mail_string, e)
       message_template = case e
@@ -84,6 +89,7 @@ module Email
 
       if message_template == :email_reject_old_destination
         template_args[:short_url] = e.message
+        template_args[:number_of_days] = SiteSetting.disallow_reply_by_email_after_days
       end
 
       if message_template
@@ -119,7 +125,7 @@ module Email
     end
 
     def set_incoming_email_rejection_message(incoming_email, message)
-      incoming_email.update_attributes!(rejection_message: message) if incoming_email
+      incoming_email.update!(rejection_message: message) if incoming_email
     end
 
     def log_email_process_failure(mail_string, exception)

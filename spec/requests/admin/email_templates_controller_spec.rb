@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 RSpec.describe Admin::EmailTemplatesController do
@@ -214,6 +216,21 @@ RSpec.describe Admin::EmailTemplatesController do
         end
       end
 
+      context "when subject has plural keys" do
+        it "doesn't update the subject" do
+          old_subject = I18n.t('system_messages.pending_users_reminder.subject_template')
+          expect(old_subject).to be_a(Hash)
+
+          put '/admin/customize/email_templates/system_messages.pending_users_reminder', params: {
+            email_template: { subject: '', body: 'Lorem ipsum' }
+          }, headers: headers
+
+          expect(response.status).to eq(200)
+
+          expect(I18n.t('system_messages.pending_users_reminder.subject_template')).to eq(old_subject)
+          expect(I18n.t('system_messages.pending_users_reminder.text_body_template')).to eq('Lorem ipsum')
+        end
+      end
     end
 
   end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 if ENV['COVERAGE']
   require 'simplecov'
   SimpleCov.start
@@ -42,8 +44,18 @@ end
 ENV["RAILS_ENV"] ||= 'test'
 require File.expand_path("../../config/environment", __FILE__)
 require 'rspec/rails'
-require 'shoulda'
+require 'shoulda-matchers'
 require 'sidekiq/testing'
+
+# The shoulda-matchers gem no longer detects the test framework
+# you're using or mixes itself into that framework automatically.
+Shoulda::Matchers.configure do |config|
+  config.integrate do |with|
+    with.test_framework :rspec
+    with.library :active_record
+    with.library :active_model
+  end
+end
 
 # Requires supporting ruby files with custom matchers and macros, etc,
 # in spec/support/ and its subdirectories.
@@ -70,6 +82,7 @@ RSpec.configure do |config|
   config.include MessageBus
   config.include RSpecHtmlMatchers
   config.include IntegrationHelpers, type: :request
+  config.include SiteSettingsHelpers
   config.mock_framework = :mocha
   config.order = 'random'
   config.infer_spec_type_from_file_location!
@@ -133,8 +146,11 @@ RSpec.configure do |config|
     end
 
     unfreeze_time
+    ActionMailer::Base.deliveries.clear
 
-    raise if ActiveRecord::Base.connection_pool.stat[:busy] > 1
+    if ActiveRecord::Base.connection_pool.stat[:busy] > 1
+      raise ActiveRecord::Base.connection_pool.stat.inspect
+    end
   end
 
   config.before :each do |x|
@@ -151,8 +167,9 @@ RSpec.configure do |config|
     RateLimiter.disable
     PostActionNotifier.disable
     SearchIndexer.disable
-    UserActionCreator.disable
+    UserActionManager.disable
     NotificationEmailer.disable
+    SiteIconManager.disable
 
     SiteSetting.provider.all.each do |setting|
       SiteSetting.remove_override!(setting.name)
@@ -172,10 +189,29 @@ RSpec.configure do |config|
       $test_cleanup_callbacks.reverse_each(&:call)
       $test_cleanup_callbacks = nil
     end
+
+    # Running jobs are expensive and most of our tests are not concern with
+    # code that runs inside jobs. run_later! means they are put on the redis
+    # queue and never processed.
+    Jobs.run_later!
+  end
+
+  config.before(:each, type: :multisite) do
+    Rails.configuration.multisite = true
+
+    RailsMultisite::ConnectionManagement.config_filename =
+      "spec/fixtures/multisite/two_dbs.yml"
+  end
+
+  config.after(:each, type: :multisite) do
+    ActiveRecord::Base.clear_all_connections!
+    Rails.configuration.multisite = false
+    RailsMultisite::ConnectionManagement.clear_settings!
+    ActiveRecord::Base.establish_connection
   end
 
   class TestCurrentUserProvider < Auth::DefaultCurrentUserProvider
-    def log_on_user(user, session, cookies)
+    def log_on_user(user, session, cookies, opts = {})
       session[:current_user_id] = user.id
       super
     end
@@ -183,6 +219,27 @@ RSpec.configure do |config|
     def log_off_user(session, cookies)
       session[:current_user_id] = nil
       super
+    end
+  end
+
+  # Normally we `use_transactional_fixtures` to clear out a database after a test
+  # runs. However, this does not apply to tests done for multisite. The second time
+  # a test runs you can end up with stale data that breaks things. This method will
+  # force a rollback after using a multisite connection.
+  def test_multisite_connection(name)
+    RailsMultisite::ConnectionManagement.with_connection(name) do
+      spec_exception = nil
+
+      ActiveRecord::Base.transaction do
+        begin
+          yield
+        rescue Exception => spec_exception
+        ensure
+          raise ActiveRecord::Rollback
+        end
+      end
+
+      raise spec_exception if spec_exception
     end
   end
 
@@ -234,8 +291,17 @@ def set_cdn_url(cdn_url)
 end
 
 def freeze_time(now = Time.now)
-  datetime = DateTime.parse(now.to_s)
-  time = Time.parse(now.to_s)
+  time = now
+  datetime = now
+
+  if Time === now
+    datetime = now.to_datetime
+  elsif DateTime === now
+    time = now.to_time
+  else
+    datetime = DateTime.parse(now.to_s)
+    time = Time.parse(now.to_s)
+  end
 
   if block_given?
     raise "nested freeze time not supported" if TrackTimeStub.stubbed
@@ -266,4 +332,19 @@ def file_from_fixtures(filename, directory = "images")
   FileUtils.mkdir_p("#{Rails.root}/tmp/spec") unless Dir.exists?("#{Rails.root}/tmp/spec")
   FileUtils.cp("#{Rails.root}/spec/fixtures/#{directory}/#{filename}", "#{Rails.root}/tmp/spec/#{filename}")
   File.new("#{Rails.root}/tmp/spec/#{filename}")
+end
+
+def has_trigger?(trigger_name)
+  DB.exec(<<~SQL) != 0
+    SELECT 1
+    FROM INFORMATION_SCHEMA.TRIGGERS
+    WHERE trigger_name = '#{trigger_name}'
+  SQL
+end
+
+def silence_stdout
+  STDOUT.stubs(:write)
+  yield
+ensure
+  STDOUT.unstub(:write)
 end

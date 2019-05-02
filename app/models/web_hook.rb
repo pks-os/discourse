@@ -2,6 +2,7 @@ class WebHook < ActiveRecord::Base
   has_and_belongs_to_many :web_hook_event_types
   has_and_belongs_to_many :groups
   has_and_belongs_to_many :categories
+  has_and_belongs_to_many :tags
 
   has_many :web_hook_events, dependent: :destroy
 
@@ -15,6 +16,10 @@ class WebHook < ActiveRecord::Base
 
   before_save :strip_url
 
+  def tag_names=(tag_names_arg)
+    DiscourseTagging.add_or_create_tags_by_name(self, tag_names_arg, unlimited: true)
+  end
+
   def self.content_types
     @content_types ||= Enum.new('application/json' => 1,
                                 'application/x-www-form-urlencoded' => 2)
@@ -23,7 +28,8 @@ class WebHook < ActiveRecord::Base
   def self.last_delivery_statuses
     @last_delivery_statuses ||= Enum.new(inactive: 1,
                                          failed: 2,
-                                         successful: 3)
+                                         successful: 3,
+                                         disabled: 4)
   end
 
   def self.default_event_types
@@ -41,54 +47,66 @@ class WebHook < ActiveRecord::Base
       .distinct
   end
 
-  def self.enqueue_hooks(type, opts = {})
+  def self.enqueue_hooks(type, event, opts = {})
     active_web_hooks(type).each do |web_hook|
       Jobs.enqueue(:emit_web_hook_event, opts.merge(
-        web_hook_id: web_hook.id, event_type: type.to_s
+        web_hook_id: web_hook.id, event_name: event.to_s, event_type: type.to_s
       ))
     end
   end
 
   def self.enqueue_object_hooks(type, object, event, serializer = nil)
+    if type == :flag
+      Discourse.deprecate("The flags webhook is deprecated. Please use reviewable instead.")
+    end
+
     if active_web_hooks(type).exists?
-      serializer ||= "WebHook#{type.capitalize}Serializer".constantize
+      payload = WebHook.generate_payload(type, object, serializer)
 
-      WebHook.enqueue_hooks(type,
-        event_name: event.to_s,
-        payload: serializer.new(object,
-          scope: self.guardian,
-          root: false
-        ).to_json
+      WebHook.enqueue_hooks(type, event,
+        id: object.id,
+        payload: payload
       )
     end
   end
 
-  def self.enqueue_topic_hooks(event, topic)
-    if active_web_hooks('topic').exists?
-      topic_view = TopicView.new(topic.id, Discourse.system_user)
+  def self.enqueue_topic_hooks(event, topic, payload = nil)
+    if active_web_hooks('topic').exists? && topic.present?
+      payload ||= begin
+        topic_view = TopicView.new(topic.id, Discourse.system_user)
+        WebHook.generate_payload(:topic, topic_view, WebHookTopicViewSerializer)
+      end
 
-      WebHook.enqueue_hooks(:topic,
-        category_id: topic&.category_id,
-        event_name: event.to_s,
-        payload: WebHookTopicViewSerializer.new(topic_view,
-          scope: self.guardian,
-          root: false
-        ).to_json
+      WebHook.enqueue_hooks(:topic, event,
+        id: topic.id,
+        category_id: topic.category_id,
+        tag_ids: topic.tags.pluck(:id),
+        payload: payload
       )
     end
   end
 
-  def self.enqueue_post_hooks(event, post)
-    if active_web_hooks('post').exists?
-      WebHook.enqueue_hooks(:post,
-        category_id: post&.topic&.category_id,
-        event_name: event.to_s,
-        payload: WebHookPostSerializer.new(post,
-          scope: self.guardian,
-          root: false
-        ).to_json
+  def self.enqueue_post_hooks(event, post, payload = nil)
+    if active_web_hooks('post').exists? && post.present?
+      payload ||= WebHook.generate_payload(:post, post)
+
+      WebHook.enqueue_hooks(:post, event,
+        id: post.id,
+        category_id: post.topic&.category_id,
+        tag_ids: post.topic&.tags&.pluck(:id),
+        payload: payload
       )
     end
+  end
+
+  def self.generate_payload(type, object, serializer = nil)
+    serializer ||= TagSerializer if type == :tag
+    serializer ||= "WebHook#{type.capitalize}Serializer".constantize
+
+    serializer.new(object,
+      scope: self.guardian,
+      root: false
+    ).to_json
   end
 
   private

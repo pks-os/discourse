@@ -1,15 +1,17 @@
 import { ajax } from "discourse/lib/ajax";
 import ColorSchemeColor from "admin/models/color-scheme-color";
+import computed from "ember-addons/ember-computed-decorators";
 
 const ColorScheme = Discourse.Model.extend(Ember.Copyable, {
   init: function() {
-    this._super();
+    this._super(...arguments);
     this.startTrackingChanges();
   },
 
-  description: function() {
+  @computed
+  description() {
     return "" + this.name;
-  }.property(),
+  },
 
   startTrackingChanges: function() {
     this.set("originals", {
@@ -19,7 +21,7 @@ const ColorScheme = Discourse.Model.extend(Ember.Copyable, {
 
   schemeJson() {
     let buffer = [];
-    _.each(this.get("colors"), c => {
+    this.get("colors").forEach(c => {
       buffer.push(`  "${c.get("name")}": "${c.get("hex")}"`);
     });
 
@@ -30,9 +32,9 @@ const ColorScheme = Discourse.Model.extend(Ember.Copyable, {
     var newScheme = ColorScheme.create({
       name: this.get("name"),
       can_edit: true,
-      colors: Em.A()
+      colors: Ember.A()
     });
-    _.each(this.get("colors"), function(c) {
+    this.get("colors").forEach(c => {
       newScheme.colors.pushObject(
         ColorSchemeColor.create({
           name: c.get("name"),
@@ -44,7 +46,8 @@ const ColorScheme = Discourse.Model.extend(Ember.Copyable, {
     return newScheme;
   },
 
-  changed: function() {
+  @computed("name", "colors.@each.changed", "saving")
+  changed() {
     if (!this.originals) return false;
     if (this.originals["name"] !== this.get("name")) return true;
     if (
@@ -54,24 +57,23 @@ const ColorScheme = Discourse.Model.extend(Ember.Copyable, {
     )
       return true;
     return false;
-  }.property("name", "colors.@each.changed", "saving"),
+  },
 
-  disableSave: function() {
+  @computed("changed")
+  disableSave(changed) {
     if (this.get("theme_id")) {
       return false;
     }
     return (
-      !this.get("changed") ||
+      !changed ||
       this.get("saving") ||
       _.any(this.get("colors"), function(c) {
         return !c.get("valid");
       })
     );
-  }.property("changed"),
+  },
 
-  newRecord: function() {
-    return !this.get("id");
-  }.property("id"),
+  newRecord: Ember.computed.not("id"),
 
   save: function(opts) {
     if (this.get("is_base") || this.get("disableSave")) return;
@@ -86,7 +88,7 @@ const ColorScheme = Discourse.Model.extend(Ember.Copyable, {
       data.name = this.name;
       data.base_scheme_id = this.get("base_scheme_id");
       data.colors = [];
-      _.each(this.get("colors"), function(c) {
+      this.get("colors").forEach(c => {
         if (!self.id || c.get("changed")) {
           data.colors.pushObject({ name: c.get("name"), hex: c.get("hex") });
         }
@@ -107,9 +109,7 @@ const ColorScheme = Discourse.Model.extend(Ember.Copyable, {
       }
       if (!opts || !opts.enabledOnly) {
         self.startTrackingChanges();
-        _.each(self.get("colors"), function(c) {
-          c.startTrackingChanges();
-        });
+        self.get("colors").forEach(c => c.startTrackingChanges());
       }
       self.set("savingStatus", I18n.t("saved"));
       self.set("saving", false);
@@ -130,7 +130,7 @@ ColorScheme.reopenClass({
   findAll: function() {
     var colorSchemes = ColorSchemes.create({ content: [], loading: true });
     return ajax("/admin/color_schemes").then(function(all) {
-      _.each(all, function(colorScheme) {
+      all.forEach(colorScheme => {
         colorSchemes.pushObject(
           ColorScheme.create({
             id: colorScheme.id,

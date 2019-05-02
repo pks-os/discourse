@@ -6,8 +6,8 @@ module Jobs
 
         begin
           URI.parse(featured_link)
-        rescue URI::InvalidURIError
-          topic.update_attributes(featured_link: URI.extract(featured_link).first)
+        rescue URI::Error
+          topic.update(featured_link: URI.extract(featured_link).first)
         end
       end
     end

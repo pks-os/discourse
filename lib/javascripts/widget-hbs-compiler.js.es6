@@ -1,5 +1,5 @@
 function resolve(path) {
-  if (path.indexOf('settings') === 0 || path.indexOf('transformed') === 0) {
+  if (path.indexOf("settings") === 0 || path.indexOf("transformed") === 0) {
     return `this.${path}`;
   }
   return path;
@@ -7,7 +7,6 @@ function resolve(path) {
 
 function sexp(value) {
   if (value.path.original === "hash") {
-
     let result = [];
 
     value.hash.pairs.forEach(p => {
@@ -34,11 +33,20 @@ function argValue(arg) {
   }
 }
 
+function useHelper(state, name) {
+  let id = state.helpersUsed[name];
+  if (!id) {
+    id = ++state.helperNumber;
+    state.helpersUsed[name] = id;
+  }
+  return `__h${id}`;
+}
+
 function mustacheValue(node, state) {
   let path = node.path.original;
 
-  switch(path) {
-    case 'attach':
+  switch (path) {
+    case "attach":
       let widgetName = argValue(node.hash.pairs.find(p => p.key === "widget"));
 
       let attrs = node.hash.pairs.find(p => p.key === "attrs");
@@ -48,10 +56,10 @@ function mustacheValue(node, state) {
       return `this.attach(${widgetName}, attrs)`;
 
       break;
-    case 'yield':
+    case "yield":
       return `this.attrs.contents()`;
       break;
-    case 'i18n':
+    case "i18n":
       let value;
       if (node.params[0].type === "StringLiteral") {
         value = `"${node.params[0].value}"`;
@@ -64,18 +72,30 @@ function mustacheValue(node, state) {
       }
 
       break;
-    case 'fa-icon':
-    case 'd-icon':
-      state.helpersUsed.iconNode = true;
+    case "avatar":
+      let template = argValue(node.hash.pairs.find(p => p.key === "template"));
+      let username = argValue(node.hash.pairs.find(p => p.key === "username"));
+      let size = argValue(node.hash.pairs.find(p => p.key === "size"));
+      return `${useHelper(
+        state,
+        "avatar"
+      )}(${size}, { template: ${template}, username: ${username} })`;
+      break;
+    case "date":
+      value = resolve(node.params[0].original);
+      return `${useHelper(state, "dateNode")}(${value})`;
+      break;
+    case "d-icon":
       let icon = node.params[0].value;
-      return `__iN("${icon}")`;
+      return `${useHelper(state, "iconNode")}("${icon}")`;
       break;
     default:
       if (node.escaped) {
         return `${resolve(path)}`;
       } else {
-        state.helpersUsed.rawHtml = true;
-        return `new __rH({ html: '<span>' + ${resolve(path)} + '</span>'})`;
+        return `new ${useHelper(state, "rawHtml")}({ html: '<span>' + ${resolve(
+          path
+        )} + '</span>'})`;
       }
       break;
   }
@@ -87,7 +107,8 @@ class Compiler {
     this.ast = ast;
 
     this.state = {
-      helpersUsed: {}
+      helpersUsed: {},
+      helperNumber: 0
     };
   }
 
@@ -99,10 +120,12 @@ class Compiler {
     let instructions = [];
     let innerAcc;
 
-    switch(node.type) {
+    switch (node.type) {
       case "Program":
         node.body.forEach(bodyNode => {
-          instructions = instructions.concat(this.processNode(parentAcc, bodyNode));
+          instructions = instructions.concat(
+            this.processNode(parentAcc, bodyNode)
+          );
         });
         break;
       case "ElementNode":
@@ -113,21 +136,28 @@ class Compiler {
         });
 
         if (node.attributes.length) {
-
           let attributes = [];
           node.attributes.forEach(a => {
-            const name = a.name === 'class' ? 'className' : a.name;
+            const name = a.name === "class" ? "className" : a.name;
             if (a.value.type === "MustacheStatement") {
-              attributes.push(`"${name}":${mustacheValue(a.value, this.state)}`);
+              attributes.push(
+                `"${name}":${mustacheValue(a.value, this.state)}`
+              );
             } else {
               attributes.push(`"${name}":"${a.value.chars}"`);
             }
           });
 
-          const attrString = `{${attributes.join(', ')}}`;
-          instructions.push(`${parentAcc}.push(virtualDom.h('${node.tag}', ${attrString}, ${innerAcc}));`);
+          const attrString = `{${attributes.join(", ")}}`;
+          instructions.push(
+            `${parentAcc}.push(virtualDom.h('${
+              node.tag
+            }', ${attrString}, ${innerAcc}));`
+          );
         } else {
-          instructions.push(`${parentAcc}.push(virtualDom.h('${node.tag}', ${innerAcc}));`);
+          instructions.push(
+            `${parentAcc}.push(virtualDom.h('${node.tag}', ${innerAcc}));`
+          );
         }
 
         break;
@@ -142,34 +172,44 @@ class Compiler {
         }
         break;
       case "BlockStatement":
-        let negate = '';
+        let negate = "";
 
-        switch(node.path.original) {
-          case 'unless':
-            negate = '!';
-          case 'if':
-            instructions.push(`if (${negate}${resolve(node.params[0].original)}) {`);
+        switch (node.path.original) {
+          case "unless":
+            negate = "!";
+          case "if":
+            instructions.push(
+              `if (${negate}${resolve(node.params[0].original)}) {`
+            );
             node.program.body.forEach(child => {
-              instructions = instructions.concat(this.processNode(parentAcc, child));
+              instructions = instructions.concat(
+                this.processNode(parentAcc, child)
+              );
             });
 
             if (node.inverse) {
               instructions.push(`} else {`);
               node.inverse.body.forEach(child => {
-                instructions = instructions.concat(this.processNode(parentAcc, child));
+                instructions = instructions.concat(
+                  this.processNode(parentAcc, child)
+                );
               });
             }
             instructions.push(`}`);
             break;
-          case 'each':
+          case "each":
             const collection = resolve(node.params[0].original);
             instructions.push(`if (${collection} && ${collection}.length) {`);
-            instructions.push(`  ${collection}.forEach(${node.program.blockParams[0]} => {`);
+            instructions.push(
+              `  ${collection}.forEach(${node.program.blockParams[0]} => {`
+            );
             node.program.body.forEach(child => {
-              instructions = instructions.concat(this.processNode(parentAcc, child));
+              instructions = instructions.concat(
+                this.processNode(parentAcc, child)
+              );
             });
             instructions.push(`  });`);
-            instructions.push('}');
+            instructions.push("}");
 
             break;
         }
@@ -182,25 +222,23 @@ class Compiler {
   }
 
   compile() {
-    return this.processNode('_r', this.ast);
+    return this.processNode("_r", this.ast);
   }
-
 }
 
 function compile(template) {
-  const preprocessor = Ember.__loader.require('@glimmer/syntax');
+  const preprocessor = Ember.__loader.require("@glimmer/syntax");
   const compiled = preprocessor.preprocess(template);
   const compiler = new Compiler(compiled);
 
   let code = compiler.compile();
 
-  let imports = '';
-  if (compiler.state.helpersUsed.iconNode) {
-    imports += "var __iN = Discourse.__widget_helpers.iconNode; ";
-  }
-  if (compiler.state.helpersUsed.rawHtml) {
-    imports += "var __rH = Discourse.__widget_helpers.rawHtml; ";
-  }
+  let imports = "";
+
+  Object.keys(compiler.state.helpersUsed).forEach(h => {
+    let id = compiler.state.helpersUsed[h];
+    imports += `var __h${id} = Discourse.__widget_helpers.${h}; `;
+  });
 
   return `function(attrs, state) { ${imports}var _r = [];\n${code}\nreturn _r; }`;
 }
@@ -209,7 +247,9 @@ exports.compile = compile;
 
 function error(path, state, msg) {
   const filename = state.file.opts.filename;
-  return path.replaceWithSourceString(`function() { console.error("${filename}: ${msg}"); }`);
+  return path.replaceWithSourceString(
+    `function() { console.error("${filename}: ${msg}"); }`
+  );
 }
 
 exports.WidgetHbsCompiler = function(babel) {
@@ -218,7 +258,9 @@ exports.WidgetHbsCompiler = function(babel) {
     visitor: {
       ImportDeclaration(path, state) {
         let node = path.node;
-        if (t.isLiteral(node.source, { value: "discourse/widgets/hbs-compiler" })) {
+        if (
+          t.isLiteral(node.source, { value: "discourse/widgets/hbs-compiler" })
+        ) {
           let first = node.specifiers && node.specifiers[0];
           if (!t.isImportDefaultSpecifier(first)) {
             let input = state.file.code;
@@ -227,32 +269,41 @@ exports.WidgetHbsCompiler = function(babel) {
             throw path.buildCodeFrameError(msg);
           }
 
-          state.importId = state.importId || path.scope.generateUidIdentifierBasedOnNode(path.node.id);
+          state.importId =
+            state.importId ||
+            path.scope.generateUidIdentifierBasedOnNode(path.node.id);
           path.scope.rename(first.local.name, state.importId.name);
           path.remove();
         }
       },
 
       TaggedTemplateExpression(path, state) {
-        if (!state.importId) { return; }
+        if (!state.importId) {
+          return;
+        }
 
-        let tagPath = path.get('tag');
+        let tagPath = path.get("tag");
         if (tagPath.node.name !== state.importId.name) {
           return;
         }
 
         if (path.node.quasi.expressions.length) {
-          return error(path, state, "placeholders inside a tagged template string are not supported");
+          return error(
+            path,
+            state,
+            "placeholders inside a tagged template string are not supported"
+          );
         }
 
-        let template = path.node.quasi.quasis.map(quasi => quasi.value.cooked).join('');
+        let template = path.node.quasi.quasis
+          .map(quasi => quasi.value.cooked)
+          .join("");
 
         try {
           path.replaceWithSourceString(compile(template));
-        } catch(e) {
+        } catch (e) {
           return error(path, state, e.toString());
         }
-
       }
     }
   };

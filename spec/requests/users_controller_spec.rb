@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe UsersController do
@@ -122,11 +124,9 @@ describe UsersController do
     end
 
     context 'missing token' do
-      before do
-        get "/u/password-reset/#{token}"
-      end
-
       it 'disallows login' do
+        get "/u/password-reset/#{token}"
+
         expect(response.status).to eq(200)
 
         expect(CGI.unescapeHTML(response.body))
@@ -136,6 +136,14 @@ describe UsersController do
           src: '/assets/application.js'
         })
 
+        expect(session[:current_user_id]).to be_blank
+      end
+
+      it "responds with proper error message" do
+        get "/u/password-reset/#{token}.json"
+
+        expect(response.status).to eq(200)
+        expect(JSON.parse(response.body)["message"]).to eq(I18n.t('password_reset.no_token'))
         expect(session[:current_user_id]).to be_blank
       end
     end
@@ -190,7 +198,10 @@ describe UsersController do
         )
 
         expect(response.status).to eq(200)
-        expect(response.body).to include('{"is_developer":false,"admin":false,"second_factor_required":false,"backup_enabled":false}')
+        expect(response.body).to have_tag("div#data-preloaded") do |element|
+          json = JSON.parse(element.current_scope.attribute('data-preloaded').value)
+          expect(json['password_reset']).to include('{"is_developer":false,"admin":false,"second_factor_required":false,"backup_enabled":false}')
+        end
 
         expect(session["password-#{token}"]).to be_blank
         expect(UserAuthToken.where(id: user_auth_token.id).count).to eq(0)
@@ -232,6 +243,22 @@ describe UsersController do
         expect(response).to redirect_to(wizard_path)
       end
 
+      it "logs the password change" do
+        user = Fabricate(:admin)
+        UserAuthToken.generate!(user_id: user.id)
+        token = user.email_tokens.create(email: user.email).token
+        get "/u/password-reset/#{token}"
+
+        expect do
+          put "/u/password-reset/#{token}", params: { password: 'hg9ow8yhg98oadminlonger' }
+        end.to change { UserHistory.count }.by (1)
+
+        entry = UserHistory.last
+
+        expect(entry.target_user_id).to eq(user.id)
+        expect(entry.action).to eq(UserHistory.actions[:change_password])
+      end
+
       it "doesn't invalidate the token when loading the page" do
         user = Fabricate(:user)
         user_token = UserAuthToken.generate!(user_id: user.id)
@@ -247,6 +274,35 @@ describe UsersController do
         expect(UserAuthToken.where(id: user_token.id).count).to eq(1)
       end
 
+      context "rate limiting" do
+
+        before { RateLimiter.clear_all!; RateLimiter.enable }
+        after  { RateLimiter.disable }
+
+        it "rate limits reset passwords" do
+          freeze_time
+
+          token = user.email_tokens.create!(email: user.email).token
+
+          3.times do
+            put "/u/password-reset/#{token}", params: {
+              second_factor_token: 123456,
+              second_factor_method: 1
+            }
+
+            expect(response.status).to eq(200)
+          end
+
+          put "/u/password-reset/#{token}", params: {
+            second_factor_token: 123456,
+            second_factor_method: 1
+          }
+
+          expect(response.status).to eq(429)
+        end
+
+      end
+
       context '2 factor authentication required' do
         let!(:second_factor) { Fabricate(:user_second_factor_totp, user: user) }
 
@@ -255,7 +311,10 @@ describe UsersController do
 
           get "/u/password-reset/#{token}"
 
-          expect(response.body).to include('{"is_developer":false,"admin":false,"second_factor_required":true,"backup_enabled":false}')
+          expect(response.body).to have_tag("div#data-preloaded") do |element|
+            json = JSON.parse(element.current_scope.attribute('data-preloaded').value)
+            expect(json['password_reset']).to include('{"is_developer":false,"admin":false,"second_factor_required":true,"backup_enabled":false}')
+          end
 
           put "/u/password-reset/#{token}", params: {
             password: 'hg9ow8yHG32O',
@@ -413,7 +472,7 @@ describe UsersController do
           get "/u/admin-login/#{email_token.token}"
           expect(response).not_to redirect_to('/')
           expect(session[:current_user_id]).not_to eq(admin.id)
-          expect(response.body).to include(I18n.t('login.second_factor_description'));
+          expect(response.body).to include(I18n.t('login.second_factor_description'))
         end
 
         describe 'invalid 2 factor token' do
@@ -426,8 +485,8 @@ describe UsersController do
             }
 
             expect(response.status).to eq(200)
-            expect(response.body).to include(I18n.t('login.second_factor_description'));
-            expect(response.body).to include(I18n.t('login.invalid_second_factor_code'));
+            expect(response.body).to include(I18n.t('login.second_factor_description'))
+            expect(response.body).to include(I18n.t('login.invalid_second_factor_code'))
           end
         end
 
@@ -494,7 +553,7 @@ describe UsersController do
         post "/u.json", params: {
           name: @user.name,
           username: @user.username,
-          passsword: 'tesing12352343'
+          password: 'tesing12352343'
         }
         expect(response.status).to eq(400)
       end
@@ -619,7 +678,7 @@ describe UsersController do
         let(:admin) { Fabricate(:admin) }
         let(:api_key) { Fabricate(:api_key, user: admin) }
 
-        it "creates the user as active with a regular key" do
+        it "creates the user as active with a an admin key" do
           SiteSetting.send_welcome_message = true
           SiteSetting.must_approve_users = true
 
@@ -640,6 +699,36 @@ describe UsersController do
           expect(new_user.approved).to eq(true)
           expect(new_user.approved_by_id).to eq(admin.id)
           expect(new_user.approved_at).to_not eq(nil)
+        end
+
+        it "will create a reviewable when a user is created as active but not approved" do
+          Jobs.run_immediately!
+          SiteSetting.must_approve_users = true
+
+          post "/u.json", params: post_user_params.merge(active: true, api_key: api_key.key)
+
+          expect(response.status).to eq(200)
+          json = JSON.parse(response.body)
+
+          new_user = User.find(json["user_id"])
+          expect(json['active']).to be_truthy
+          expect(new_user.approved).to eq(false)
+          expect(ReviewableUser.pending.find_by(target: new_user)).to be_present
+        end
+
+        it "won't create a reviewable when a user is not active" do
+          Jobs.run_immediately!
+          SiteSetting.must_approve_users = true
+
+          post "/u.json", params: post_user_params.merge(api_key: api_key.key)
+
+          expect(response.status).to eq(200)
+          json = JSON.parse(response.body)
+
+          new_user = User.find(json["user_id"])
+          expect(json['active']).to eq(false)
+          expect(new_user.approved).to eq(false)
+          expect(ReviewableUser.pending.find_by(target: new_user)).to be_blank
         end
 
         it "won't create the developer as active" do
@@ -745,8 +834,6 @@ describe UsersController do
       end
 
       context 'authentication records for' do
-        let(:user) { Fabricate(:user) }
-
         before do
           OmniAuth.config.test_mode = true
 
@@ -778,7 +865,7 @@ describe UsersController do
           }
 
           expect(response.status).to eq(200)
-          expect(TwitterUserInfo.count).to eq(1)
+          expect(UserAssociatedAccount.where(provider_name: "twitter").count).to eq(1)
         end
 
         it "returns an error when email has been changed from the validated email address" do
@@ -1372,20 +1459,13 @@ describe UsersController do
       before do
         sign_in(user)
       end
-      let(:user) { Fabricate(:user) }
+      let(:user) { Fabricate(:user, username: 'test.test', name: "Test User") }
 
       it "should be able to update a user" do
-        put "/u/#{user.username}.json", params: { name: 'test.test' }
+        put "/u/#{user.username}", params: { name: 'test.test' }
 
         expect(response.status).to eq(200)
         expect(user.reload.name).to eq('test.test')
-      end
-
-      it "should be able to update a user" do
-        put "/u/#{user.username}.json", params: { name: 'testing123' }
-
-        expect(response.status).to eq(200)
-        expect(user.reload.name).to eq('testing123')
       end
     end
 
@@ -1423,7 +1503,6 @@ describe UsersController do
 
           put "/u/#{user.username}.json", params: {
             name: 'Jim Tom',
-            custom_fields: { test: :it },
             muted_usernames: "#{user2.username},#{user3.username}",
             watched_tags: "#{tags[0].name},#{tags[1].name}"
           }
@@ -1433,26 +1512,26 @@ describe UsersController do
           user.reload
 
           expect(user.name).to eq 'Jim Tom'
-          expect(user.custom_fields['test']).to eq 'it'
+
           expect(user.muted_users.pluck(:username).sort).to eq [user2.username, user3.username].sort
           expect(TagUser.where(
             user: user,
             notification_level: TagUser.notification_levels[:watching]
           ).pluck(:tag_id)).to contain_exactly(tags[0].id, tags[1].id)
 
-          theme = Theme.create(name: "test", user_selectable: true, user_id: -1)
+          theme = Fabricate(:theme, user_selectable: true)
 
           put "/u/#{user.username}.json", params: {
             muted_usernames: "",
             theme_ids: [theme.id],
-            email_direct: false
+            email_level: UserOption.email_level_types[:always]
           }
 
           user.reload
 
           expect(user.muted_users.pluck(:username).sort).to be_empty
           expect(user.user_option.theme_ids).to eq([theme.id])
-          expect(user.user_option.email_direct).to eq(false)
+          expect(user.user_option.email_level).to eq(UserOption.email_level_types[:always])
         end
 
         context 'a locale is chosen that differs from I18n.locale' do
@@ -1516,6 +1595,46 @@ describe UsersController do
               expect(user.user_fields[user_field.id.to_s]).to be_blank
             end
           end
+
+          context "custom_field" do
+            before do
+              plugin = Plugin::Instance.new
+              plugin.register_editable_user_custom_field :test2
+            end
+
+            after do
+              User.plugin_editable_user_custom_fields.clear
+            end
+
+            it "only updates allowed user fields" do
+              put "/u/#{user.username}.json", params: { custom_fields: { test1: :hello1, test2: :hello2 } }
+
+              expect(response.status).to eq(200)
+              expect(user.custom_fields["test1"]).to be_blank
+              expect(user.custom_fields["test2"]).to eq("hello2")
+            end
+
+            it "works alongside a user field" do
+              user_field = Fabricate(:user_field, editable: true)
+              put "/u/#{user.username}.json", params: { custom_fields: { test1: :hello1, test2: :hello2 }, user_fields: { user_field.id.to_s => 'happy' } }
+              expect(response.status).to eq(200)
+              expect(user.custom_fields["test1"]).to be_blank
+              expect(user.custom_fields["test2"]).to eq("hello2")
+              expect(user.user_fields[user_field.id.to_s]).to eq('happy')
+            end
+
+            it "is secure when there are no registered editable fields" do
+              User.plugin_editable_user_custom_fields.clear
+              put "/u/#{user.username}.json", params: { custom_fields: { test1: :hello1, test2: :hello2 } }
+              expect(response.status).to eq(200)
+              expect(user.custom_fields["test1"]).to be_blank
+              expect(user.custom_fields["test2"]).to be_blank
+
+              put "/u/#{user.username}.json", params: { custom_fields: ["arrayitem1", "arrayitem2"] }
+              expect(response.status).to eq(200)
+            end
+
+          end
         end
 
         it 'returns user JSON' do
@@ -1551,7 +1670,7 @@ describe UsersController do
       put "/u/#{user.username}/preferences/badge_title.json", params: { user_badge_id: user_badge.id }
 
       expect(user.reload.title).not_to eq(badge.display_name)
-      badge.update_attributes allow_title: true
+      badge.update allow_title: true
 
       put "/u/#{user.username}/preferences/badge_title.json", params: { user_badge_id: user_badge.id }
 
@@ -1725,9 +1844,13 @@ describe UsersController do
     end
 
     context 'while logged in' do
+      before do
+        sign_in(user)
+      end
 
-      let!(:user) { sign_in(Fabricate(:user)) }
-      let(:upload) { Fabricate(:upload) }
+      let(:upload) do
+        Fabricate(:upload, user: user)
+      end
 
       it "raises an error when you don't have permission to toggle the avatar" do
         another_user = Fabricate(:user)
@@ -1764,6 +1887,9 @@ describe UsersController do
       end
 
       it 'can successfully pick a gravatar' do
+
+        user.user_avatar.update_columns(gravatar_upload_id: upload.id)
+
         put "/u/#{user.username}/preferences/avatar/pick.json", params: {
           upload_id: upload.id, type: "gravatar"
         }
@@ -1771,6 +1897,16 @@ describe UsersController do
         expect(response.status).to eq(200)
         expect(user.reload.uploaded_avatar_id).to eq(upload.id)
         expect(user.user_avatar.reload.gravatar_upload_id).to eq(upload.id)
+      end
+
+      it 'can not pick uploads that were not created by user' do
+        upload2 = Fabricate(:upload)
+
+        put "/u/#{user.username}/preferences/avatar/pick.json", params: {
+          upload_id: upload2.id, type: "custom"
+        }
+
+        expect(response.status).to eq(403)
       end
 
       it 'can successfully pick a custom avatar' do
@@ -1914,6 +2050,73 @@ describe UsersController do
     end
   end
 
+  describe '#ignore' do
+    it 'raises an error when not logged in' do
+      put "/u/#{user.username}/notification_level.json", params: { notification_level: "" }
+      expect(response.status).to eq(403)
+    end
+
+    context 'while logged in' do
+      let(:user) { Fabricate(:user, trust_level: 2) }
+      let(:another_user) { Fabricate(:user) }
+      before do
+        sign_in(user)
+      end
+
+      let!(:ignored_user) { Fabricate(:ignored_user, user: user, ignored_user: another_user) }
+      let!(:muted_user) { Fabricate(:muted_user, user: user, muted_user: another_user) }
+
+      context 'when changing notification level to normal' do
+        it 'changes notification level to normal' do
+          put "/u/#{another_user.username}/notification_level.json", params: { notification_level: "normal" }
+          expect(IgnoredUser.count).to eq(0)
+          expect(MutedUser.count).to eq(0)
+        end
+      end
+
+      context 'when changing notification level to mute' do
+        it 'changes notification level to mute' do
+          put "/u/#{another_user.username}/notification_level.json", params: { notification_level: "mute" }
+          expect(IgnoredUser.count).to eq(0)
+          expect(MutedUser.find_by(user_id: user.id, muted_user_id: another_user.id)).to be_present
+        end
+      end
+
+      context 'when changing notification level to ignore' do
+        it 'changes notification level to ignore' do
+          put "/u/#{another_user.username}/notification_level.json", params: { notification_level: "ignore" }
+          expect(MutedUser.count).to eq(0)
+          expect(IgnoredUser.find_by(user_id: user.id, ignored_user_id: another_user.id)).to be_present
+        end
+
+        context 'when expiring_at param is set' do
+          it 'changes notification level to ignore' do
+            freeze_time(Time.now) do
+              expiring_at = 3.days.from_now
+              put "/u/#{another_user.username}/notification_level.json", params: { notification_level: "ignore", expiring_at: expiring_at }
+
+              ignored_user = IgnoredUser.find_by(user_id: user.id, ignored_user_id: another_user.id)
+              expect(ignored_user).to be_present
+              expect(ignored_user.expiring_at.to_i).to eq(expiring_at.to_i)
+              expect(MutedUser.count).to eq(0)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe "for user with period in username" do
+    let(:user_with_period) { Fabricate(:user, username: "myname.test") }
+
+    it "still works" do
+      sign_in(user_with_period)
+      UserDestroyer.any_instance.expects(:destroy).with(user_with_period, anything).returns(user_with_period)
+      delete "/u/#{user_with_period.username}", xhr: true
+      expect(response.status).to eq(200)
+    end
+  end
+
   describe '#my_redirect' do
     it "redirects if the user is not logged in" do
       get "/my/wat.json"
@@ -1953,6 +2156,19 @@ describe UsersController do
         sign_in(Fabricate(:user))
         get "/u/#{Fabricate(:user).username}/emails.json"
         expect(response).to be_forbidden
+      end
+
+      it "returns emails and associated_accounts for self" do
+        user = Fabricate(:user)
+        sign_in(user)
+
+        get "/u/#{user.username}/emails.json"
+
+        expect(response.status).to eq(200)
+        json = JSON.parse(response.body)
+        expect(json["email"]).to eq(user.email)
+        expect(json["secondary_emails"]).to eq(user.secondary_emails)
+        expect(json["associated_accounts"]).to eq([])
       end
 
       it "returns emails and associated_accounts when you're allowed to see them" do
@@ -2109,6 +2325,14 @@ describe UsersController do
       expect(json["user_summary"]["topic_count"]).to eq(1)
       expect(json["user_summary"]["post_count"]).to eq(0)
     end
+
+    it "returns 404 for a hidden profile" do
+      user = Fabricate(:user)
+      user.user_option.update_column(:hide_profile_and_presence, true)
+
+      get "/u/#{user.username_lower}/summary.json"
+      expect(response.status).to eq(404)
+    end
   end
 
   describe '#confirm_admin' do
@@ -2223,7 +2447,7 @@ describe UsersController do
       end
 
       it "raises an error when logged in" do
-        moderator = sign_in(Fabricate(:moderator))
+        sign_in(Fabricate(:moderator))
         post_user
 
         put "/u/update-activation-email.json", params: {
@@ -2235,7 +2459,7 @@ describe UsersController do
 
       it "raises an error when the new email is taken" do
         active_user = Fabricate(:user)
-        user = post_user
+        post_user
 
         put "/u/update-activation-email.json", params: {
           email: active_user.email
@@ -2245,7 +2469,7 @@ describe UsersController do
       end
 
       it "raises an error when the email is blacklisted" do
-        user = post_user
+        post_user
         SiteSetting.email_domains_blacklist = 'example.com'
         put "/u/update-activation-email.json", params: { email: 'test@example.com' }
         expect(response.status).to eq(422)
@@ -2350,12 +2574,27 @@ describe UsersController do
   describe '#show' do
     context "anon" do
       let(:user) { Discourse.system_user }
-      let(:other_user) { Fabricate(:user) }
 
       it "returns success" do
         get "/u/#{user.username}.json"
         expect(response.status).to eq(200)
-        expect(JSON.parse(response.body)["user"]["username"]).to eq(user.username)
+        parsed = JSON.parse(response.body)["user"]
+
+        expect(parsed['username']).to eq(user.username)
+        expect(parsed["profile_hidden"]).to be_blank
+        expect(parsed["trust_level"]).to be_present
+      end
+
+      it "returns a hidden profile" do
+        user.user_option.update_column(:hide_profile_and_presence, true)
+
+        get "/u/#{user.username}.json"
+        expect(response.status).to eq(200)
+        parsed = JSON.parse(response.body)["user"]
+
+        expect(parsed["username"]).to eq(user.username)
+        expect(parsed["profile_hidden"]).to eq(true)
+        expect(parsed["trust_level"]).to be_blank
       end
 
       it "should redirect to login page for anonymous user when profiles are hidden" do
@@ -2532,6 +2771,18 @@ describe UsersController do
       expect(response).to redirect_to("/")
     end
 
+    context 'when cookies contains a destination URL' do
+      it 'should redirect to the URL' do
+        sign_in(Fabricate(:user))
+        destination_url = 'http://thisisasite.com/somepath'
+        cookies[:destination_url] = destination_url
+
+        get "/u/account-created"
+
+        expect(response).to redirect_to(destination_url)
+      end
+    end
+
     context "when the user account is created" do
       include ApplicationHelper
 
@@ -2541,9 +2792,12 @@ describe UsersController do
 
         expect(response.status).to eq(200)
 
-        expect(response.body).to include(
-          "{\"message\":\"#{I18n.t("login.activate_email", email: user.email).gsub!("</", "<\\/")}\",\"show_controls\":true,\"username\":\"#{user.username}\",\"email\":\"#{user.email}\"}"
-        )
+        expect(response.body).to have_tag("div#data-preloaded") do |element|
+          json = JSON.parse(element.current_scope.attribute('data-preloaded').value)
+          expect(json['accountCreated']).to include(
+            "{\"message\":\"#{I18n.t("login.activate_email", email: user.email).gsub!("</", "<\\/")}\",\"show_controls\":true,\"username\":\"#{user.username}\",\"email\":\"#{user.email}\"}"
+          )
+        end
       end
     end
   end
@@ -2633,7 +2887,8 @@ describe UsersController do
         Fabricate(:group,
           mentionable_level: 99,
           messageable_level: 0,
-          visibility_level: 0
+          visibility_level: 0,
+          name: 'aaa1'
         )
       end
 
@@ -2641,14 +2896,16 @@ describe UsersController do
         Fabricate(:group,
           mentionable_level: 99,
           messageable_level: 0,
-          visibility_level: 1
+          visibility_level: 1,
+          name: 'aaa2'
         )
       end
 
       let!(:messageable_group) do
         Fabricate(:group,
           mentionable_level: 0,
-          messageable_level: 99
+          messageable_level: 99,
+          name: 'aaa3'
         )
       end
 
@@ -2657,8 +2914,17 @@ describe UsersController do
           sign_in(user)
         end
 
-        it "only returns visible groups" do
+        it "does not search for groups if there is no term" do
           get "/u/search/users.json", params: { include_groups: "true" }
+
+          expect(response.status).to eq(200)
+
+          groups = JSON.parse(response.body)["groups"]
+          expect(groups).to eq(nil)
+        end
+
+        it "only returns visible groups" do
+          get "/u/search/users.json", params: { include_groups: "true", term: 'a' }
 
           expect(response.status).to eq(200)
 
@@ -2671,7 +2937,8 @@ describe UsersController do
         it "doesn't search for groups" do
           get "/u/search/users.json", params: {
             include_mentionable_groups: 'false',
-            include_messageable_groups: 'false'
+            include_messageable_groups: 'false',
+            term: 'a'
           }
 
           expect(response.status).to eq(200)
@@ -2681,7 +2948,8 @@ describe UsersController do
         it "searches for messageable groups" do
           get "/u/search/users.json", params: {
             include_mentionable_groups: 'false',
-            include_messageable_groups: 'true'
+            include_messageable_groups: 'true',
+            term: 'a'
           }
 
           expect(response.status).to eq(200)
@@ -2693,7 +2961,8 @@ describe UsersController do
         it 'searches for mentionable groups' do
           get "/u/search/users.json", params: {
             include_messageable_groups: 'false',
-            include_mentionable_groups: 'true'
+            include_mentionable_groups: 'true',
+            term: 'a'
           }
 
           expect(response.status).to eq(200)
@@ -2709,7 +2978,8 @@ describe UsersController do
         it 'should not include mentionable/messageable groups' do
           get "/u/search/users.json", params: {
             include_mentionable_groups: 'false',
-            include_messageable_groups: 'false'
+            include_messageable_groups: 'false',
+            term: 'a'
           }
 
           expect(response.status).to eq(200)
@@ -2717,7 +2987,8 @@ describe UsersController do
 
           get "/u/search/users.json", params: {
             include_mentionable_groups: 'false',
-            include_messageable_groups: 'true'
+            include_messageable_groups: 'true',
+            term: 'a'
           }
 
           expect(response.status).to eq(200)
@@ -2725,7 +2996,8 @@ describe UsersController do
 
           get "/u/search/users.json", params: {
             include_messageable_groups: 'false',
-            include_mentionable_groups: 'true'
+            include_mentionable_groups: 'true',
+            term: 'a'
           }
 
           expect(response.status).to eq(200)
@@ -2920,6 +3192,7 @@ describe UsersController do
             put "/users/second_factor.json", params: {
               second_factor_token: '000000',
               second_factor_method: UserSecondFactor.methods[:totp],
+              second_factor_target: UserSecondFactor.methods[:totp],
               enable: 'true',
             }
 
@@ -2935,8 +3208,9 @@ describe UsersController do
           it 'should allow second factor for the user to be enabled' do
             put "/users/second_factor.json", params: {
               second_factor_token: ROTP::TOTP.new(user_second_factor.data).now,
-              enable: 'true',
-              second_factor_method: UserSecondFactor.methods[:totp]
+              second_factor_method: UserSecondFactor.methods[:totp],
+              second_factor_target: UserSecondFactor.methods[:totp],
+              enable: 'true'
             }
 
             expect(response.status).to eq(200)
@@ -2946,7 +3220,8 @@ describe UsersController do
           it 'should allow second factor for the user to be disabled' do
             put "/users/second_factor.json", params: {
               second_factor_token: ROTP::TOTP.new(user_second_factor.data).now,
-              second_factor_method: UserSecondFactor.methods[:totp]
+              second_factor_method: UserSecondFactor.methods[:totp],
+              second_factor_target: UserSecondFactor.methods[:totp]
             }
 
             expect(response.status).to eq(200)
@@ -2959,7 +3234,7 @@ describe UsersController do
         context 'when token is missing' do
           it 'returns the right response' do
             put "/users/second_factor.json", params: {
-              second_factor_method: UserSecondFactor.methods[:backup_codes],
+              second_factor_target: UserSecondFactor.methods[:backup_codes]
             }
 
             expect(response.status).to eq(400)
@@ -2970,7 +3245,8 @@ describe UsersController do
           it 'returns the right response' do
             put "/users/second_factor.json", params: {
               second_factor_token: '000000',
-              second_factor_method: UserSecondFactor.methods[:backup_codes],
+              second_factor_method: UserSecondFactor.methods[:totp],
+              second_factor_target: UserSecondFactor.methods[:backup_codes]
             }
 
             expect(response.status).to eq(200)
@@ -2985,7 +3261,8 @@ describe UsersController do
           it 'should allow second factor backup for the user to be disabled' do
             put "/users/second_factor.json", params: {
               second_factor_token: ROTP::TOTP.new(user_second_factor.data).now,
-              second_factor_method: UserSecondFactor.methods[:backup_codes]
+              second_factor_method: UserSecondFactor.methods[:totp],
+              second_factor_target: UserSecondFactor.methods[:backup_codes]
             }
 
             expect(response.status).to eq(200)
@@ -3002,7 +3279,8 @@ describe UsersController do
     context 'when not logged in' do
       it 'should return the right response' do
         put "/users/second_factors_backup.json", params: {
-          second_factor_token: 'wrongtoken'
+          second_factor_token: 'wrongtoken',
+          second_factor_method: UserSecondFactor.methods[:totp]
         }
 
         expect(response.status).to eq(403)
@@ -3017,7 +3295,8 @@ describe UsersController do
       describe 'create 2fa request' do
         it 'fails on incorrect password' do
           put "/users/second_factors_backup.json", params: {
-            second_factor_token: 'wrongtoken'
+            second_factor_token: 'wrongtoken',
+            second_factor_method: UserSecondFactor.methods[:totp]
           }
 
           expect(response.status).to eq(200)
@@ -3032,7 +3311,8 @@ describe UsersController do
             SiteSetting.enable_local_logins = false
 
             put "/users/second_factors_backup.json", params: {
-              second_factor_token: ROTP::TOTP.new(user_second_factor.data).now
+              second_factor_token: ROTP::TOTP.new(user_second_factor.data).now,
+              second_factor_method: UserSecondFactor.methods[:totp]
             }
 
             expect(response.status).to eq(404)
@@ -3045,7 +3325,8 @@ describe UsersController do
             SiteSetting.enable_sso = true
 
             put "/users/second_factors_backup.json", params: {
-              second_factor_token: ROTP::TOTP.new(user_second_factor.data).now
+              second_factor_token: ROTP::TOTP.new(user_second_factor.data).now,
+              second_factor_method: UserSecondFactor.methods[:totp]
             }
 
             expect(response.status).to eq(404)
@@ -3056,7 +3337,8 @@ describe UsersController do
           user_second_factor
 
           put "/users/second_factors_backup.json", params: {
-            second_factor_token: ROTP::TOTP.new(user_second_factor.data).now
+            second_factor_token: ROTP::TOTP.new(user_second_factor.data).now,
+            second_factor_method: UserSecondFactor.methods[:totp]
           }
 
           expect(response.status).to eq(200)
@@ -3154,6 +3436,47 @@ describe UsersController do
           }
           expect(response.status).to eq(200)
         end
+      end
+
+    end
+
+  end
+
+  describe '#revoke_auth_token' do
+
+    context 'while logged in' do
+      before do
+        2.times { sign_in(user) }
+      end
+
+      it 'logs user out' do
+        ids = user.user_auth_tokens.order(:created_at).pluck(:id)
+
+        post "/u/#{user.username}/preferences/revoke-auth-token.json",
+          params: { token_id: ids[0] }
+
+        expect(response.status).to eq(200)
+
+        user.user_auth_tokens.reload
+        expect(user.user_auth_tokens.count).to eq(1)
+        expect(user.user_auth_tokens.first.id).to eq(ids[1])
+      end
+
+      it 'does not let user log out of current session' do
+        token = UserAuthToken.generate!(user_id: user.id)
+        env = Rack::MockRequest.env_for("/", "HTTP_COOKIE" => "_t=#{token.unhashed_auth_token};")
+        Guardian.any_instance.stubs(:request).returns(Rack::Request.new(env))
+
+        post "/u/#{user.username}/preferences/revoke-auth-token.json", params: { token_id: token.id }
+
+        expect(response.status).to eq(400)
+      end
+
+      it 'logs user out from everywhere if token_id is not present' do
+        post "/u/#{user.username}/preferences/revoke-auth-token.json"
+
+        expect(response.status).to eq(200)
+        expect(user.user_auth_tokens.count).to eq(0)
       end
 
     end

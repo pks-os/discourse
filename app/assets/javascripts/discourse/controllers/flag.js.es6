@@ -39,7 +39,8 @@ export default Ember.Controller.extend(ModalFunctionality, {
     return flagTopic ? "flagging_topic.title" : "flagging.title";
   },
 
-  flagsAvailable: function() {
+  @computed("post", "flagTopic", "model.actions_summary.@each.can_act")
+  flagsAvailable() {
     if (!this.get("flagTopic")) {
       // flagging post
       let flagsAvailable = this.get("model.flagsAvailable");
@@ -56,7 +57,7 @@ export default Ember.Controller.extend(ModalFunctionality, {
       return flagsAvailable;
     } else {
       // flagging topic
-      let lookup = Em.Object.create();
+      let lookup = Ember.Object.create();
       let model = this.get("model");
       model.get("actions_summary").forEach(a => {
         a.flagTopic = model;
@@ -71,16 +72,18 @@ export default Ember.Controller.extend(ModalFunctionality, {
         });
       });
     }
-  }.property("post", "flagTopic", "model.actions_summary.@each.can_act"),
+  },
 
-  staffFlagsAvailable: function() {
+  @computed("post", "flagTopic", "model.actions_summary.@each.can_act")
+  staffFlagsAvailable() {
     return (
       this.get("model.flagsAvailable") &&
       this.get("model.flagsAvailable").length > 1
     );
-  }.property("post", "flagTopic", "model.actions_summary.@each.can_act"),
+  },
 
-  submitEnabled: function() {
+  @computed("selected.is_custom_flag", "message.length")
+  submitEnabled() {
     const selected = this.get("selected");
     if (!selected) return false;
 
@@ -92,9 +95,9 @@ export default Ember.Controller.extend(ModalFunctionality, {
       );
     }
     return true;
-  }.property("selected.is_custom_flag", "message.length"),
+  },
 
-  submitDisabled: Em.computed.not("submitEnabled"),
+  submitDisabled: Ember.computed.not("submitEnabled"),
 
   // Staff accounts can "take action"
   @computed("flagTopic", "selected.is_custom_flag")

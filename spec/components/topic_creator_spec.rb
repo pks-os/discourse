@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe TopicCreator do
@@ -126,7 +128,7 @@ describe TopicCreator do
       end
     end
 
-    context 'private message' do
+    context 'personal message' do
 
       context 'success cases' do
         before do
@@ -146,16 +148,28 @@ describe TopicCreator do
         end
 
         it "should be possible for a trusted user to send private messages via email" do
-          SiteSetting.expects(:enable_personal_email_messages).returns(true)
+          SiteSetting.manual_polling_enabled = true
+          SiteSetting.reply_by_email_address = "sam+%{reply_key}@sam.com"
+          SiteSetting.reply_by_email_enabled = true
+          SiteSetting.enable_personal_email_messages = true
           SiteSetting.min_trust_to_send_email_messages = TrustLevel[1]
 
           expect(TopicCreator.create(user, Guardian.new(user), pm_to_email_valid_attrs)).to be_valid
+        end
+
+        it "enable_personal_messages setting should not be checked when sending private message to staff via flag" do
+          SiteSetting.enable_personal_messages = false
+          SiteSetting.min_trust_to_send_messages = TrustLevel[4]
+          expect(TopicCreator.create(user, Guardian.new(user), pm_valid_attrs.merge(subtype: TopicSubtype.notify_moderators))).to be_valid
         end
       end
 
       context 'failure cases' do
         it "should be rollback the changes when email is invalid" do
-          SiteSetting.expects(:enable_personal_email_messages).returns(true)
+          SiteSetting.manual_polling_enabled = true
+          SiteSetting.reply_by_email_address = "sam+%{reply_key}@sam.com"
+          SiteSetting.reply_by_email_enabled = true
+          SiteSetting.enable_personal_email_messages = true
           SiteSetting.min_trust_to_send_email_messages = TrustLevel[1]
           attrs = pm_to_email_valid_attrs.dup
           attrs[:target_emails] = "t" * 256

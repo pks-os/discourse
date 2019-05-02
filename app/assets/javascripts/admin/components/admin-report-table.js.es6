@@ -1,5 +1,4 @@
 import computed from "ember-addons/ember-computed-decorators";
-import { registerTooltip, unregisterTooltip } from "discourse/lib/tooltip";
 
 const PAGES_LIMIT = 8;
 
@@ -10,19 +9,6 @@ export default Ember.Component.extend({
   sortDirection: 1,
   perPage: Ember.computed.alias("options.perPage"),
   page: 0,
-
-  didRender() {
-    this._super(...arguments);
-
-    unregisterTooltip($(".text[data-tooltip]"));
-    registerTooltip($(".text[data-tooltip]"));
-  },
-
-  willDestroyElement() {
-    this._super(...arguments);
-
-    unregisterTooltip($(".text[data-tooltip]"));
-  },
 
   @computed("model.computedLabels.length")
   twoColumns(labelsLength) {
@@ -52,7 +38,12 @@ export default Ember.Component.extend({
 
   @computed("totalsForSampleRow", "model.computedLabels")
   totalsForSample(row, labels) {
-    return labels.map(label => label.compute(row));
+    return labels.map(label => {
+      const computedLabel = label.compute(row);
+      computedLabel.type = label.type;
+      computedLabel.property = label.mainProperty;
+      return computedLabel;
+    });
   },
 
   @computed("model.data", "model.computedLabels")
@@ -88,8 +79,8 @@ export default Ember.Component.extend({
     if (sortLabel) {
       const compare = (label, direction) => {
         return (a, b) => {
-          let aValue = label.compute(a).value;
-          let bValue = label.compute(b).value;
+          const aValue = label.compute(a, { useSortProperty: true }).value;
+          const bValue = label.compute(b, { useSortProperty: true }).value;
           const result = aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
           return result * direction;
         };
@@ -115,11 +106,16 @@ export default Ember.Component.extend({
   pages(data, perPage, page) {
     if (!data || data.length <= perPage) return [];
 
-    let pages = [...Array(Math.ceil(data.length / perPage)).keys()].map(v => {
+    const pagesIndexes = [];
+    for (let i = 0; i < Math.ceil(data.length / perPage); i++) {
+      pagesIndexes.push(i);
+    }
+
+    let pages = pagesIndexes.map(v => {
       return {
         page: v + 1,
         index: v,
-        class: v === page ? "current" : null
+        class: v === page ? "is-current" : null
       };
     });
 

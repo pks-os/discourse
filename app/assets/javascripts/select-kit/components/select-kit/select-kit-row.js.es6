@@ -16,7 +16,13 @@ export default Ember.Component.extend(UtilsMixin, {
     "ariaLabel:aria-label",
     "guid:data-guid"
   ],
-  classNameBindings: ["isHighlighted", "isSelected"],
+  classNameBindings: [
+    "isHighlighted",
+    "isSelected",
+    "computedContent.originalContent.classNames"
+  ],
+
+  forceEscape: Ember.computed.alias("options.forceEscape"),
 
   ariaLabel: Ember.computed.or("computedContent.ariaLabel", "title"),
 
@@ -81,10 +87,10 @@ export default Ember.Component.extend(UtilsMixin, {
   },
 
   click() {
-    this.sendAction("onClickRow", this.get("computedContent"));
+    this.onClickRow(this.get("computedContent"));
   },
 
   _sendMouseoverAction() {
-    this.sendAction("onMouseoverRow", this.get("computedContent"));
+    this.onMouseoverRow(this.get("computedContent"));
   }
 });

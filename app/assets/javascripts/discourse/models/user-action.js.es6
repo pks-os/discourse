@@ -21,9 +21,9 @@ const UserActionTypes = {
 };
 const InvertedActionTypes = {};
 
-_.each(UserActionTypes, (k, v) => {
-  InvertedActionTypes[k] = v;
-});
+Object.keys(UserActionTypes).forEach(
+  k => (InvertedActionTypes[k] = UserActionTypes[k])
+);
 
 const UserAction = RestModel.extend({
   @on("init")
@@ -118,22 +118,22 @@ const UserAction = RestModel.extend({
     );
   },
 
-  replyType: Em.computed.equal("action_type", UserActionTypes.replies),
-  postType: Em.computed.equal("action_type", UserActionTypes.posts),
-  topicType: Em.computed.equal("action_type", UserActionTypes.topics),
-  bookmarkType: Em.computed.equal("action_type", UserActionTypes.bookmarks),
-  messageSentType: Em.computed.equal(
+  replyType: Ember.computed.equal("action_type", UserActionTypes.replies),
+  postType: Ember.computed.equal("action_type", UserActionTypes.posts),
+  topicType: Ember.computed.equal("action_type", UserActionTypes.topics),
+  bookmarkType: Ember.computed.equal("action_type", UserActionTypes.bookmarks),
+  messageSentType: Ember.computed.equal(
     "action_type",
     UserActionTypes.messages_sent
   ),
-  messageReceivedType: Em.computed.equal(
+  messageReceivedType: Ember.computed.equal(
     "action_type",
     UserActionTypes.messages_received
   ),
-  mentionType: Em.computed.equal("action_type", UserActionTypes.mentions),
-  isPM: Em.computed.or("messageSentType", "messageReceivedType"),
-  postReplyType: Em.computed.or("postType", "replyType"),
-  removableBookmark: Em.computed.and("bookmarkType", "sameUser"),
+  mentionType: Ember.computed.equal("action_type", UserActionTypes.mentions),
+  isPM: Ember.computed.or("messageSentType", "messageReceivedType"),
+  postReplyType: Ember.computed.or("postType", "replyType"),
+  removableBookmark: Ember.computed.and("bookmarkType", "sameUser"),
 
   addChild(action) {
     let groups = this.get("childGroups");
@@ -141,7 +141,7 @@ const UserAction = RestModel.extend({
       groups = {
         likes: UserActionGroup.create({ icon: "heart" }),
         stars: UserActionGroup.create({ icon: "star" }),
-        edits: UserActionGroup.create({ icon: "pencil" }),
+        edits: UserActionGroup.create({ icon: "pencil-alt" }),
         bookmarks: UserActionGroup.create({ icon: "bookmark" })
       };
     }
@@ -164,16 +164,7 @@ const UserAction = RestModel.extend({
     }
   },
 
-  children: function() {
-    const g = this.get("childGroups");
-    let rval = [];
-    if (g) {
-      rval = [g.likes, g.stars, g.edits, g.bookmarks].filter(function(i) {
-        return i.get("items") && i.get("items").length > 0;
-      });
-    }
-    return rval;
-  }.property(
+  @computed(
     "childGroups",
     "childGroups.likes.items",
     "childGroups.likes.items.[]",
@@ -183,7 +174,17 @@ const UserAction = RestModel.extend({
     "childGroups.edits.items.[]",
     "childGroups.bookmarks.items",
     "childGroups.bookmarks.items.[]"
-  ),
+  )
+  children() {
+    const g = this.get("childGroups");
+    let rval = [];
+    if (g) {
+      rval = [g.likes, g.stars, g.edits, g.bookmarks].filter(function(i) {
+        return i.get("items") && i.get("items").length > 0;
+      });
+    }
+    return rval;
+  },
 
   switchToActing() {
     this.setProperties({

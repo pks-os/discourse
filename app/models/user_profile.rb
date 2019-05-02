@@ -1,9 +1,6 @@
 require_dependency 'upload_creator'
 class UserProfile < ActiveRecord::Base
 
-  # TODO: remove this after Nov 1, 2018
-  self.ignored_columns = %w{card_image_badge_id}
-
   belongs_to :user, inverse_of: :user_profile
 
   validates :bio_raw, length: { maximum: 3000 }
@@ -142,7 +139,7 @@ class UserProfile < ActiveRecord::Base
 
     domain = begin
       URI.parse(self.website).host
-    rescue URI::InvalidURIError
+    rescue URI::Error
     end
     self.errors.add :base, (I18n.t('user.website.domain_not_allowed', domains: allowed_domains.split('|').join(", "))) unless allowed_domains.split('|').include?(domain)
   end

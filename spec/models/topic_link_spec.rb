@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 
 describe TopicLink do
@@ -26,26 +28,35 @@ describe TopicLink do
   end
 
   describe 'external links' do
-    before do
-      post = Fabricate(:post, raw: "
-http://a.com/
-http://b.com/b
-http://#{'a' * 200}.com/invalid
-http://b.com/#{'a' * 500}
-                        ", user: user, topic: topic)
+    let(:post2) do
+      Fabricate(:post, raw: <<~RAW, user: user, topic: topic)
+        http://a.com/
+        https://b.com/b
+        http://#{'a' * 200}.com/invalid
+        //b.com/#{'a' * 500}
+      RAW
+    end
 
-      TopicLink.extract_from(post)
+    before do
+      TopicLink.extract_from(post2)
     end
 
     it 'works' do
-      # has the forum topic links
-      expect(topic.topic_links.count).to eq(3)
+      expect(topic.topic_links.pluck(:url)).to contain_exactly(
+        "http://a.com/",
+        "https://b.com/b",
+        "//b.com/#{'a' * 500}"[0...TopicLink.max_url_length]
+      )
+    end
 
-      # works with markdown links
-      expect(topic.topic_links.exists?(url: "http://a.com/")).to eq(true)
+    it "doesn't reset them when rebaking" do
+      old_ids = topic.topic_links.pluck(:id)
 
-      #works with markdown links followed by a period
-      expect(topic.topic_links.exists?(url: "http://b.com/b")).to eq(true)
+      TopicLink.extract_from(post2)
+
+      new_ids = topic.topic_links.pluck(:id)
+
+      expect(new_ids).to contain_exactly(*old_ids)
     end
 
   end

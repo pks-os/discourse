@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rails_helper'
 require 'email/sender'
 
@@ -12,15 +14,24 @@ describe Email::Sender do
       before { SiteSetting.disable_emails = "yes" }
 
       it "doesn't deliver mail when mails are disabled" do
-        Mail::Message.any_instance.expects(:deliver_now).never
-        message = Mail::Message.new(to: moderator.email , body: "hello")
-        expect(Email::Sender.new(message, :hello).send).to eq(nil)
+        message = UserNotifications.email_login(moderator)
+        Email::Sender.new(message, :email_login).send
+
+        expect(ActionMailer::Base.deliveries).to eq([])
       end
 
       it "delivers mail when mails are disabled but the email_type is admin_login" do
-        Mail::Message.any_instance.expects(:deliver_now).once
-        message = Mail::Message.new(to: moderator.email , body: "hello")
+        message = UserNotifications.admin_login(moderator)
         Email::Sender.new(message, :admin_login).send
+
+        expect(ActionMailer::Base.deliveries.first.to).to eq([moderator.email])
+      end
+
+      it "delivers mail when mails are disabled but the email_type is test_message" do
+        message = TestMailer.send_test(moderator.email)
+        Email::Sender.new(message, :test_message).send
+
+        expect(ActionMailer::Base.deliveries.first.to).to eq([moderator.email])
       end
     end
 
@@ -56,6 +67,13 @@ describe Email::Sender do
     message = Mail::Message.new(body: 'hello')
     message.expects(:deliver_now).never
     Email::Sender.new(message, :hello).send
+  end
+
+  it "doesn't deliver when the to address uses the .invalid tld" do
+    message = Mail::Message.new(body: 'hello', to: 'myemail@example.invalid')
+    message.expects(:deliver_now).never
+    expect { Email::Sender.new(message, :hello).send }.
+      to change { SkippedEmailLog.where(reason_type: SkippedEmailLog.reason_types[:sender_message_to_invalid]).count }.by(1)
   end
 
   it "doesn't deliver when the body is nil" do
@@ -331,6 +349,25 @@ describe Email::Sender do
         expect(message.html_part.body.to_s).to match("<p><strong>hello</strong></p>")
       end
     end
+  end
+
+  context 'with a deleted post' do
+
+    it 'should skip sending the email' do
+      post = Fabricate(:post, deleted_at: 1.day.ago)
+
+      message = Mail::Message.new to: 'disc@ourse.org', body: 'some content'
+      message.header['X-Discourse-Post-Id'] = post.id
+      message.header['X-Discourse-Topic-Id'] = post.topic_id
+      message.expects(:deliver_now).never
+
+      email_sender = Email::Sender.new(message, :valid_type)
+      expect { email_sender.send }.to change { SkippedEmailLog.count }
+
+      log = SkippedEmailLog.last
+      expect(log.reason_type).to eq(SkippedEmailLog.reason_types[:sender_post_deleted])
+    end
+
   end
 
   context 'with a user' do

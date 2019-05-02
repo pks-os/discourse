@@ -2,7 +2,7 @@
   A form to create an IP address that will be blocked or whitelisted.
   Example usage:
 
-    {{screened-ip-address-form action="recordAdded"}}
+    {{screened-ip-address-form action=(action "recordAdded")}}
 
   where action is a callback on the controller or route that will get called after
   the new record is successfully saved. It is called with the new ScreenedIpAddress record
@@ -59,18 +59,11 @@ export default Ember.Component.extend({
         screenedIpAddress
           .save()
           .then(result => {
-            if (result.success) {
-              this.setProperties({ ip_address: "", formSubmitted: false });
-              this.sendAction(
-                "action",
-                ScreenedIpAddress.create(result.screened_ip_address)
-              );
-              Ember.run.schedule("afterRender", () =>
-                this.$(".ip-address-input").focus()
-              );
-            } else {
-              bootbox.alert(result.errors);
-            }
+            this.setProperties({ ip_address: "", formSubmitted: false });
+            this.action(ScreenedIpAddress.create(result.screened_ip_address));
+            Ember.run.schedule("afterRender", () =>
+              this.$(".ip-address-input").focus()
+            );
           })
           .catch(e => {
             this.set("formSubmitted", false);
